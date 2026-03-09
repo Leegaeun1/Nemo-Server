@@ -26,6 +26,17 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# 가상환경
+venv/
+.env
+
+# 대용량 데이터 및 모델
+data/
+*.mp4
+*.jpg
+*.png
+models/*.pt
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
