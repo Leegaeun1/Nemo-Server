@@ -1,0 +1,12 @@
+# custom_tracker.yaml
+tracker_type: botsort
+track_high_thresh: 0.3
+track_low_thresh: 0.1
+new_track_thresh: 0.4
+track_buffer: 100       # 사람이 사라져도 100프레임 동안 기억
+match_thresh: 0.7
+# --- 아래 항목들이 없으면 AttributeError가 발생합니다 ---
+gmc_method: sparseOptFlow # 혹은 none (에러 해결 핵심)
+proximity_thresh: 0.5
+appearance_thresh: 0.25
+with_reid: False

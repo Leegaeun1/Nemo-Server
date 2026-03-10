@@ -32,10 +32,12 @@ venv/
 
 # 대용량 데이터 및 모델
 data/
-*.mp4
-*.jpg
+Test_video/*.mp4
+Test_img/*.jpg
 *.png
 models/*.pt
+models/*.engine
+models/*.onnx
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
