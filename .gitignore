@@ -26,6 +26,29 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# 가상환경
+venv/
+.env
+
+# 대용량 데이터 및 모델
+data/
+Test_video/*.mp4
+Test_img/*.jpg
+*.png
+models/*.pt
+models/*.engine
+models/*.onnx
+dataset/*
+dataset_extreme_occ/*
+dataset_performance_up/*
+augmented_faces/*
+glasses/*
+Test_person/*
+runs/detect/*
+models/*
+checkpoints/*
+adaface_ir50_ms1mv2.ckpt
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
