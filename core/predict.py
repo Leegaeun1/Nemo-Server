@@ -10,8 +10,8 @@ def transform_coords(coords, angle, orig_w, orig_h):
     if angle == 270:  return [orig_w - y, x]
     return [x, y]
 
-model = YOLO('yolov8n-face.pt') # 사용할 모델 
-img = cv2.imread('Test_img/input5.jpg')
+model = YOLO('../models/yolov8n-face.pt') # 사용할 모델 
+img = cv2.imread('Test_img/test3.jpg')
 h, w = img.shape[:2] # 세로, 가로 길이 
 
 all_faces = [] # [box, score, keypoints] 형태로 저장
