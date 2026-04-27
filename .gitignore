@@ -38,6 +38,16 @@ Test_img/*.jpg
 models/*.pt
 models/*.engine
 models/*.onnx
+dataset/*
+dataset_extreme_occ/*
+dataset_performance_up/*
+augmented_faces/*
+glasses/*
+Test_person/*
+runs/detect/*
+models/*
+checkpoints/*
+adaface_ir50_ms1mv2.ckpt
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

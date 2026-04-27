@@ -21,13 +21,14 @@ print(f" 실행 디바이스: {device}")
 # YOLO 얼굴 검출기 (트래킹 용)
 try:
     face_detector = YOLO('models/yolov11n-face.pt').to(device)
+    #face_detector = YOLO('runs/detect/train6/weights/best.pt').to(device)
 except Exception as e:
     print(f" YOLO 모델 로드 실패: {e}")
     face_detector = YOLO('models/yolov11n-face.pt') # CPU 폴백
 
 # MediaPipe Face Mesh (고급 블러 용)
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(max_num_faces=5, refine_landmarks=False, min_detection_confidence=0.3)
+face_mesh = mp_face_mesh.FaceMesh(max_num_faces=15, refine_landmarks=False, min_detection_confidence=0.3)
 
 # ==========================================
 # 2. InsightFace 등록 및 가상 데이터 생성
@@ -77,7 +78,7 @@ def is_same_person(embed1, embed2, threshold=0.4): # InsightFace 권장 Threshol
 # ==========================================
 # 3. 영상 설정
 # ==========================================
-video_path = "Test_video/input_video3.mp4"
+video_path = "Test_video/input_video2.mp4"
 cap = cv2.VideoCapture(video_path)
 
 if not cap.isOpened():
@@ -90,7 +91,7 @@ fps = cap.get(cv2.CAP_PROP_FPS)
 if fps == 0: fps = 30 
 
 fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-out = cv2.VideoWriter('Test_video/output_one_shot.mp4', fourcc, fps, (width, height)) # 저장 
+out = cv2.VideoWriter('Test_video/output_one_shot___.mp4', fourcc, fps, (width, height)) # 저장 
 
 window_name = 'One-Shot Face Recognition Blur'
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -111,17 +112,19 @@ while cap.isOpened():
     if not success: break
 
     # 1. YOLO 트래킹으로 빠른 얼굴 검출 및 ID 유지
-    results = face_detector.track(frame, persist=True, conf=0.15, imgsz=640, device=device, verbose=False)
-
+    results = face_detector.track(frame, persist=True, conf=0.3, imgsz=640, device=device, verbose=False)
+    
     if results[0].boxes is not None and results[0].boxes.id is not None:
         boxes = results[0].boxes.xyxy.cpu().numpy()
         ids = results[0].boxes.id.int().cpu().tolist()
         
         for box, f_id in zip(boxes, ids):
             x1, y1, x2, y2 = map(int, box)
-            
+            cv2.rectangle(frame, (max(0,x1), max(0,y1)), (min(frame.shape[1],x2), min(frame.shape[0],y2)), (0, 255, 0), 2)
+            cv2.putText(frame, f"KNOWN:{f_id}", (max(0,x1), max(0, y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
             # ---------------------------------------------------------
-            # [신원 확인 로직] 최초 1회만 고성능 인식 실행
+            # 신원 확인 로직
             # ---------------------------------------------------------
             if f_id not in checked_identities: # 처음 본 사람
                 # 1. 얼굴 영역 크롭 (InsightFace가 랜드마크를 잘 찾도록 상하좌우 여백을 30%씩)
@@ -166,8 +169,6 @@ while cap.isOpened():
                         continue # 에러 나도 다음 프레임에서 재시도
                 else:
                     continue
-
-            
             # ---------------------------------------------------------
             # [블러 처리 로직]
             # ---------------------------------------------------------
