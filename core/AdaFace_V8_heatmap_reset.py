@@ -57,7 +57,7 @@ class HeatmapEngine:
             # 잡힌 부위가 기존 히트맵 영역 안인지 확인
             if f_id not in self.channels: 
                 best_id = None
-                best_heat = 0.5 
+                best_heat = 0.2
                 for old_id, heatmap in self.channels.items():
                     if 0 <= hcy < self.grid_h and 0 <= hcx < self.grid_w:
                         if heatmap[hcy, hcx] > best_heat:
@@ -157,9 +157,9 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"🚀 실행 디바이스: {device} (서버 연산 모드)")
 
 try:
-    face_detector = YOLO('models/yolov11n-face.pt').to(device)
+    face_detector = YOLO('models/yolov12s-face.pt').to(device)
 except:
-    face_detector = YOLO('yolov8n-face.pt').to(device)
+    face_detector = YOLO('models/yolov12n-face.pt').to(device)
 
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(max_num_faces=15, refine_landmarks=False, min_detection_confidence=0.3)
@@ -233,7 +233,7 @@ glasses_list = [cv2.imread(p, cv2.IMREAD_UNCHANGED) for p in glasses_paths]
 glasses_list = [g for g in glasses_list if g is not None and g.shape[2] == 4]
 print(f"준비된 가상 안경: {len(glasses_list)}개")
 
-img_paths = glob.glob("Test_person/rei3.*")
+img_paths = glob.glob("Test_person/person1.*")
 
 for img_path in img_paths:
     img = cv2.imread(img_path) 
@@ -282,10 +282,10 @@ for img_path in img_paths:
 # ==========================================
 # 3. 영상 설정 및 신원 확인 메인 루프
 # ==========================================
-video_path = os.path.abspath("Test_video/test_video6.mp4")
+video_path = os.path.abspath("Test_video/input_video1.mp4")
 cap = cv2.VideoCapture(video_path)
 
-out = cv2.VideoWriter('Test_video/output_hybrid_heatmap_rei8.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 
+out = cv2.VideoWriter('Test_video/output_hybrid_heatmap_ip1.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 
                       cap.get(cv2.CAP_PROP_FPS) or 30, 
                       (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
 

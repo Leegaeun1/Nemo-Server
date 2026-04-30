@@ -144,13 +144,13 @@ class YoloReviewer(QMainWindow):
         try:
             if os.path.exists(img_path):
                 os.remove(img_path)
-                print(f"🖼️ 이미지 삭제 완료: {img_path}")
+                print(f"이미지 삭제 완료: {img_path}")
             
             if os.path.exists(txt_path):
                 os.remove(txt_path)
-                print(f"📄 라벨 삭제 완료: {txt_path}")
+                print(f"라벨 삭제 완료: {txt_path}")
         except Exception as e:
-            print(f"❌ 삭제 중 오류 발생: {e}")
+            print(f"삭제 중 오류 발생: {e}")
 
         # 3. 프로그램 내 목록에서 제거 (이게 없으면 다음 클릭 시 에러 발생)
         self.image_paths.pop(self.current_idx)
