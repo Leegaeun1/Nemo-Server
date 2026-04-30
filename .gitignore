@@ -73,6 +73,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+serviceAccountKey.json
 
 # Translations
 *.mo
