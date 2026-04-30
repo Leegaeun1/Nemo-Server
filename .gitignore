@@ -48,6 +48,8 @@ runs/detect/*
 models/*
 checkpoints/*
 adaface_ir50_ms1mv2.ckpt
+google-services.json
+serviceAccountKey.json
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
