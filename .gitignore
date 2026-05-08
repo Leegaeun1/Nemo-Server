@@ -76,7 +76,7 @@ coverage.xml
 .pytest_cache/
 cover/
 serviceAccountKey.json
-
+celery
 # Translations
 *.mo
 *.pot

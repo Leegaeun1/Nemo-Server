@@ -10,7 +10,8 @@ from PIL import Image
 import time
 import math
 from celery_worker import celery_app
-
+import subprocess
+import shutil
 import firebase_admin
 from firebase_admin import credentials, messaging
 
@@ -184,8 +185,8 @@ def is_same_person(embed1, embed2, threshold=0.4):
     distance = np.dot(e1, e2)
     return distance > threshold, distance
 
-def send_push_notification(token, video_name):
-    print(f"발송 시도 시작! (파일명: {video_name})")
+def send_push_notification(token, output_path):
+    print(f"발송 시도 시작! (파일명: {os.path.basename(output_path)})")
     
     if not token:
         print("토큰(token)이 비어있습니다! 앱에서 토큰을 못 보낸 것 같아요.")
@@ -202,6 +203,9 @@ def send_push_notification(token, video_name):
                 title='NEMO 비식별화 완료!',
                 body=f'비식별화 처리가 끝났습니다! 앱으로 들어와서 다운로드해주세요.',
             ),
+            data={
+                "output_filename": os.path.basename(output_path) 
+            },
             token=token,
         )
         response = messaging.send(message)
@@ -213,13 +217,15 @@ def send_push_notification(token, video_name):
 # Celery 백그라운드 작업 
 # ==========================================
 @celery_app.task(name="process_video")
-def process_video_task(input_path, output_path, device_token):
+def process_video_task(input_path, output_path, device_token, user_id):
     print(f"🎬 [Celery 워커] 영상 처리 시작: {input_path}")
-    
+    video_name = os.path.splitext(os.path.basename(input_path))[0]  # "영상이름"
+    output_path = f"outputs/{video_name}_변환.mp4"
     known_embeddings = []
-    # (주의) 서버의 Test_person 경로에 이미지가 있어야 등록됩니다.
-    img_paths = glob.glob("Test_person/person1.*")
-    for img_path in img_paths:
+    user_faces_dir = f"user_faces/{user_id}"  # user_id 직접 사용
+    face_files = glob.glob(f"{user_faces_dir}/*.*")
+    print(f"👤 등록된 얼굴 {len(face_files)}개 로드")
+    for img_path in face_files:
         img = cv2.imread(img_path) 
         if img is None: continue
         faces = face_aligner.get(img)
@@ -354,9 +360,45 @@ def process_video_task(input_path, output_path, device_token):
     cap.release()
     out.release()
     
-    print("✅ 영상 처리 완료!")
-    # 처리가 완료되면 기기로 알림을 발송합니다!
-    video_name = os.path.basename(input_path)
-    send_push_notification(device_token, video_name)
+    print("✅ 영상 처리 완료! ffmpeg로 재인코딩 중...")
     
+    # ffmpeg로 H264 재인코딩 (모바일 호환)
+    temp_path = output_path.replace('.mp4', '_temp.mp4')
+    os.rename(output_path, temp_path)
+    
+    result = subprocess.run([
+        'ffmpeg', '-y',
+        '-i', temp_path,
+        '-vcodec', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-preset', 'fast',
+        '-crf', '23',
+        '-movflags', '+faststart',
+        output_path
+    ], capture_output=True, text=True, encoding='utf-8', errors='ignore')
+    
+    os.remove(temp_path)
+
+    # ffmpeg 성공 여부 먼저 확인
+    if result.returncode != 0:
+        print(f"❌ ffmpeg 실패: {result.stderr}")
+        # 실패해도 임시파일/얼굴은 정리
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        if os.path.exists(user_faces_dir):
+            shutil.rmtree(user_faces_dir)
+        return False  # ← 알림 발송 없이 종료
+
+    print("✅ ffmpeg 재인코딩 완료!")
+
+    # 성공했을 때만 정리 + 알림
+    if os.path.exists(input_path):
+        os.remove(input_path)
+        print(f"입력 영상 삭제: {input_path}")
+
+    if os.path.exists(user_faces_dir):
+        shutil.rmtree(user_faces_dir)
+        print(f"얼굴 폴더 삭제: {user_faces_dir}")
+
+    send_push_notification(device_token, output_path)
     return True
