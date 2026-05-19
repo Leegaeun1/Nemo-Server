@@ -187,7 +187,9 @@ def is_same_person(embed1, embed2, threshold=0.4):
 
 def send_push_notification(token, output_path):
     print(f"발송 시도 시작! (파일명: {os.path.basename(output_path)})")
-    
+    file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    file_size_str = f"{file_size_mb:.1f}MB"
+
     if not token:
         print("토큰(token)이 비어있습니다! 앱에서 토큰을 못 보낸 것 같아요.")
         return
@@ -204,7 +206,8 @@ def send_push_notification(token, output_path):
                 body=f'비식별화 처리가 끝났습니다! 앱으로 들어와서 다운로드해주세요.',
             ),
             data={
-                "output_filename": os.path.basename(output_path) 
+                "output_filename": os.path.basename(output_path),
+                "file_size": file_size_str,
             },
             token=token,
         )
@@ -220,7 +223,8 @@ def send_push_notification(token, output_path):
 def process_video_task(input_path, output_path, device_token, user_id):
     print(f"🎬 [Celery 워커] 영상 처리 시작: {input_path}")
     video_name = os.path.splitext(os.path.basename(input_path))[0]  # "영상이름"
-    output_path = f"outputs/{video_name}_변환.mp4"
+    original_name = video_name[37:] if len(video_name) > 37 else video_name  # ✅
+    output_path = f"outputs/{original_name}_변환.mp4"
     known_embeddings = []
     user_faces_dir = f"user_faces/{user_id}"  # user_id 직접 사용
     face_files = glob.glob(f"{user_faces_dir}/*.*")
@@ -396,9 +400,6 @@ def process_video_task(input_path, output_path, device_token, user_id):
         os.remove(input_path)
         print(f"입력 영상 삭제: {input_path}")
 
-    if os.path.exists(user_faces_dir):
-        shutil.rmtree(user_faces_dir)
-        print(f"얼굴 폴더 삭제: {user_faces_dir}")
 
     send_push_notification(device_token, output_path)
     return True

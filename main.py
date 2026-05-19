@@ -9,9 +9,11 @@ from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 import hashlib
 from starlette.background import BackgroundTask
-
+import redis
+from typing import Dict
+from fastapi import Body
 app = FastAPI()
-
+redis_client = redis.Redis(host='localhost', port=6379, db=0)
 FACES_DIR = "user_faces"  # 얼굴 이미지 저장 폴더
 os.makedirs(FACES_DIR, exist_ok=True) 
 
@@ -33,9 +35,27 @@ async def upload_video(
         shutil.copyfileobj(video.file, buffer)
 
     # device_token(알림용)과 user_id(폴더식별용) 둘 다 전달
-    tasks.process_video_task.delay(input_path, output_path, device_token, user_id)
+    result = tasks.process_video_task.delay(input_path, output_path, device_token, user_id)
 
-    return {"message": "접수 완료", "task_id": file_id}
+    queue_length = redis_client.llen('celery')  # 대기 중인 작업 수
+    active_count = 1 if redis_client.llen('celery') >= 0 else 0  # 현재 처리 중
+    queue_position = queue_length  # 방금 넣은 것 포함
+
+    return {"message": "접수 완료", "task_id": file_id, "queue_position": queue_position}
+
+@app.delete("/delete_face")
+async def delete_face(body: Dict = Body(...)):
+    user_id = body.get('user_id')
+    filename = body.get('filename')
+    file_path = f"user_faces/{user_id}/{filename}"
+    
+    print(f"삭제 요청: {file_path}")  # ✅ 어떤 경로로 오는지 확인
+    print(f"파일 존재 여부: {os.path.exists(file_path)}")
+    
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        return {"status": "ok"}
+    return {"status": "not found"}
 
 @app.post("/upload_face")
 async def upload_face(

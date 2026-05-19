@@ -77,6 +77,8 @@ coverage.xml
 cover/
 serviceAccountKey.json
 celery
+outputs/
+
 # Translations
 *.mo
 *.pot

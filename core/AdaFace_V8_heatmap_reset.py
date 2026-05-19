@@ -233,7 +233,7 @@ glasses_list = [cv2.imread(p, cv2.IMREAD_UNCHANGED) for p in glasses_paths]
 glasses_list = [g for g in glasses_list if g is not None and g.shape[2] == 4]
 print(f"준비된 가상 안경: {len(glasses_list)}개")
 
-img_paths = glob.glob("Test_person/person1.*")
+img_paths = glob.glob("Test_person/person2.*")
 
 for img_path in img_paths:
     img = cv2.imread(img_path) 
