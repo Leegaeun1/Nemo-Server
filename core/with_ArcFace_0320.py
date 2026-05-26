@@ -20,11 +20,11 @@ print(f" 실행 디바이스: {device}")
 
 # YOLO 얼굴 검출기 (트래킹 용)
 try:
-    face_detector = YOLO('models/yolov11n-face.pt').to(device)
+    face_detector = YOLO('models/yolov12s-face.pt').to(device)
     #face_detector = YOLO('runs/detect/train6/weights/best.pt').to(device)
 except Exception as e:
     print(f" YOLO 모델 로드 실패: {e}")
-    face_detector = YOLO('models/yolov11n-face.pt') # CPU 폴백
+    face_detector = YOLO('models/yolov12s-face.pt') # CPU 폴백
 
 # MediaPipe Face Mesh (고급 블러 용)
 mp_face_mesh = mp.solutions.face_mesh
@@ -40,7 +40,7 @@ face_analyzer = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider
 face_analyzer.prepare(ctx_id=0 if device == 0 else -1, det_size=(640, 640))
 
 known_embeddings = [] # 내가 설정한 인물 사진
-img_paths = glob.glob("Test_person/*.jpg") + glob.glob("Test_person/*.png") + glob.glob("Test_person/*.jpeg")
+img_paths = glob.glob("Test_person/person6.png")
 
 if not img_paths:
     print("⚠️ Test_person 폴더에 이미지가 없습니다. 모든 얼굴이 블러 처리됩니다.")
@@ -78,7 +78,7 @@ def is_same_person(embed1, embed2, threshold=0.4): # InsightFace 권장 Threshol
 # ==========================================
 # 3. 영상 설정
 # ==========================================
-video_path = "Test_video/input_video2.mp4"
+video_path = "videos/video_08.mp4"
 cap = cv2.VideoCapture(video_path)
 
 if not cap.isOpened():
@@ -91,7 +91,7 @@ fps = cap.get(cv2.CAP_PROP_FPS)
 if fps == 0: fps = 30 
 
 fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-out = cv2.VideoWriter('Test_video/output_one_shot___.mp4', fourcc, fps, (width, height)) # 저장 
+out = cv2.VideoWriter('outputs/comp_result8.mp4', fourcc, fps, (width, height)) # 저장 
 
 window_name = 'One-Shot Face Recognition Blur'
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -120,8 +120,8 @@ while cap.isOpened():
         
         for box, f_id in zip(boxes, ids):
             x1, y1, x2, y2 = map(int, box)
-            cv2.rectangle(frame, (max(0,x1), max(0,y1)), (min(frame.shape[1],x2), min(frame.shape[0],y2)), (0, 255, 0), 2)
-            cv2.putText(frame, f"KNOWN:{f_id}", (max(0,x1), max(0, y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            #cv2.rectangle(frame, (max(0,x1), max(0,y1)), (min(frame.shape[1],x2), min(frame.shape[0],y2)), (0, 255, 0), 2)
+            #cv2.putText(frame, f"KNOWN:{f_id}", (max(0,x1), max(0, y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
             # ---------------------------------------------------------
             # 신원 확인 로직
