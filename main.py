@@ -4,7 +4,7 @@ import os
 import uuid
 import glob
 from celery_worker import celery_app
-import tasks_add_backTracking as tasks  # tasks.py를 불러와야 Celery가 작업을 인식합니다.
+import tasks_add_backTracking_V2 as tasks  # tasks.py를 불러와야 Celery가 작업을 인식합니다.
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 import hashlib
@@ -75,6 +75,35 @@ async def upload_face(
         f.write(await file.read())
 
     return {"status": "ok", "path": save_path, "index": next_index}
+
+@app.get("/file-info/{filename}")
+async def get_file_info(filename: str):
+    file_path = f"outputs/{filename}"
+    if not os.path.exists(file_path):
+        return JSONResponse(status_code=404, content={"error": "파일이 없습니다."})
+
+    size_bytes = os.path.getsize(file_path)
+    size_mb = size_bytes / (1024 * 1024)
+    size_str = f"{size_mb:.1f}MB"
+
+    thumbnail_filename = filename.replace(".mp4", ".jpg")
+    thumbnail_path = f"outputs/{thumbnail_filename}"
+    has_thumbnail = os.path.exists(thumbnail_path)
+
+    return {
+        "name": filename,
+        "size": size_str,
+        "thumbnail_url": f"/thumbnail/{thumbnail_filename}" if has_thumbnail else None,
+    }
+
+
+@app.get("/thumbnail/{filename}")
+async def get_thumbnail(filename: str):
+    thumbnail_path = f"outputs/{filename}"
+    if not os.path.exists(thumbnail_path):
+        return JSONResponse(status_code=404, content={"error": "썸네일이 없습니다."})
+    return FileResponse(path=thumbnail_path, media_type="image/jpeg")
+
 
 @app.get("/download/{filename}")
 async def download_video(filename: str):
