@@ -15,9 +15,9 @@ import shutil
 # 로컬 테스트용 설정 
 # ==========================================
 LOCAL_TEST_MODE = True          # True: 로컬 직접 실행 / False: Celery 서버 모드
-LOCAL_VIDEO_PATH  = "Test_video/input_video1.mp4"   # 처리할 동영상 경로
+LOCAL_VIDEO_PATH  = "videos/video_08.mp4"   # 처리할 동영상 경로
 LOCAL_FACES_DIR   = "Test_person"   # 등록 얼굴 사진 폴더 (1명)
-LOCAL_OUTPUT_PATH = "outputs/result.mp4"     # 결과물 저장 경로
+LOCAL_OUTPUT_PATH = "outputs/test8.mp4"     # 결과물 저장 경로
 
 # ==========================================
 # Firebase
@@ -51,7 +51,7 @@ class HeatmapEngine:
         self.last_sizes.clear()
         self.last_centers.clear()
 
-    def get_visual_heatmap(self):
+    def get_visual_heatmap(self): # 히트맵 시각화용 컬러맵으로 반환
         combined_heat = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
         for f_id, heatmap in self.channels.items():
             combined_heat = np.maximum(combined_heat, heatmap)
@@ -61,7 +61,14 @@ class HeatmapEngine:
         _, mask = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
         return cv2.bitwise_and(colored_heatmap, colored_heatmap, mask=mask)
 
-    def update_and_recover(self, boxes, ids, confs):
+    def update_and_recover(self, boxes, ids, confs): # 매 프레임마다 호출됨!
+        ''' 1. 기존 모든 채널에 decay(0.96) 적용 → 오래된 기억을 서서히 지움
+            2. 새로 들어온 박스마다:
+            - 신규 ID이면 → 히트맵에서 같은 위치에 열기가 있는 old_id와 매칭 시도
+            - conf가 낮거나 박스가 갑자기 작아지면 → "부분 가려짐"으로 판단
+            - 이전 위치/크기와 0.7:0.3 비율로 스무딩 (갑작스러운 움직임 완화)
+            3. 히트맵 채널 업데이트 (해당 위치에 +2.0 가중치)
+            4. 오랫동안 보이지 않아 heat가 0.5 이하가 된 채널은 삭제'''
         for f_id in list(self.channels.keys()):
             self.channels[f_id] *= self.base_decay
 
@@ -156,18 +163,18 @@ except ImportError:
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 try:
-    face_detector = YOLO('models/yolov12s-face.pt').to(device)
+    face_detector = YOLO('models/yolov12s-face.pt').to(device)  # 얼굴 탐지 + 트래킹
 except:
     face_detector = YOLO('models/yolov12n-face.pt').to(device)
 
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(max_num_faces=15, refine_landmarks=False, min_detection_confidence=0.3)
+face_mesh = mp_face_mesh.FaceMesh(max_num_faces=15, refine_landmarks=False, min_detection_confidence=0.3) # 랜드마크 (현재는 사용안함!)
 static_face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1,
-                                          refine_landmarks=False, min_detection_confidence=0.5)
+                                          refine_landmarks=False, min_detection_confidence=0.4)
 
 try:
     face_aligner = FaceAnalysis(name='buffalo_sc', allowed_modules=['detection'],
-                                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+                                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']) # insightface 정렬
     face_aligner.prepare(ctx_id=0 if torch.cuda.is_available() else -1, det_size=(640, 640))
 except Exception as e:
     print(f"face_aligner 로드 에러: {e}")
@@ -177,7 +184,7 @@ adaface_transform = transforms.Compose([
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
-adaface_model = build_model('ir_50').to(device)
+adaface_model = build_model('ir_50').to(device) # 얼굴 임베딩 추출.
 try:
     checkpoint = torch.load('adaface_ir50_ms1mv2.ckpt', map_location=device)
     state_dict = checkpoint.get('state_dict', checkpoint)
@@ -188,7 +195,7 @@ except:
     print("⚠️ adaface checkpoint를 찾지 못했습니다.")
 
 
-def is_same_person(embed1, embed2, threshold=0.4):
+def is_same_person(embed1, embed2, threshold=0.4): # 두 임베딩의 코사인 유사도 계산! 0.4이상이면 같은 사람으로 판정함.
     e1 = embed1.flatten() / (np.linalg.norm(embed1) + 1e-8)
     e2 = embed2.flatten() / (np.linalg.norm(embed2) + 1e-8)
     distance = np.dot(e1, e2)
@@ -350,7 +357,7 @@ def process_video(input_path, output_path, user_faces_dir, device_token=None, us
     # 등록 얼굴 임베딩 로드
     known_embeddings = []
     #face_files = glob.glob(f"{user_faces_dir}/*.*")
-    face_files = glob.glob(f"{user_faces_dir}/person2.png")
+    face_files = glob.glob(f"{user_faces_dir}/person6.png")
     print(f"👤 등록된 얼굴 {len(face_files)}개 로드")
     for img_path in face_files:
         img = cv2.imread(img_path)

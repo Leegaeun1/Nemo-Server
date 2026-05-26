@@ -78,6 +78,10 @@ cover/
 serviceAccountKey.json
 celery
 outputs/
+data/
+videos/
+results/
+uploads/
 
 # Translations
 *.mo

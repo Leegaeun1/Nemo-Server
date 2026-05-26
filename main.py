@@ -4,7 +4,7 @@ import os
 import uuid
 import glob
 from celery_worker import celery_app
-import tasks  # tasks.py를 불러와야 Celery가 작업을 인식합니다.
+import tasks_add_backTracking as tasks  # tasks.py를 불러와야 Celery가 작업을 인식합니다.
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 import hashlib
