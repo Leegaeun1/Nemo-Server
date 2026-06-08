@@ -82,7 +82,7 @@ data/
 videos/
 results/
 uploads/
-
+heatmap_overlay_frame*.jpg
 # Translations
 *.mo
 *.pot

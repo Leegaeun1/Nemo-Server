@@ -12,7 +12,7 @@ from ultralytics import YOLO
 VIDEOS = ["video_01", "video_02", "video_03", "video_04", "video_05",
           "video_06", "video_07", "video_08", "video_09", "video_10"]
 
-MODEL_PATH = "models/yolov12s-face.pt"
+MODEL_PATH = "models/yolov10n-face.pt"
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 face_detector = YOLO(MODEL_PATH).to(device)
 

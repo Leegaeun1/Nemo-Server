@@ -14,9 +14,9 @@ import shutil
 # ==========================================
 # 로컬 테스트용 설정
 # ==========================================
-LOCAL_TEST_MODE = False
+LOCAL_TEST_MODE = True
 LOCAL_VIDEO_PATH  = "videos/video_03.mp4"
-LOCAL_FACES_DIR   = "Test_person"
+LOCAL_FACES_DIR   = "data/video_03/registered_face"
 LOCAL_OUTPUT_PATH = "outputs/test3.mp4"
 
 # ==========================================
@@ -410,7 +410,6 @@ def run_identity_pass(
  
         all_boxes, all_ids = heatmap_engine.update_and_recover(
             current_boxes, current_ids, current_confs)
- 
         # ── 신원 판단 ────────────────────────────────────────
         for box, f_id in zip(all_boxes, all_ids):
             # 이미 등록자로 확정된 ID는 스킵
