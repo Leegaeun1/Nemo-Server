@@ -16,7 +16,7 @@ import shutil
 # ==========================================
 LOCAL_TEST_MODE = True
 LOCAL_VIDEO_PATH  = "videos/video_03.mp4"
-LOCAL_FACES_DIR   = "Test_person"
+LOCAL_FACES_DIR   = "data/video_03/registered_face"
 LOCAL_OUTPUT_PATH = "outputs/test3.mp4"
 
 # ==========================================
@@ -222,7 +222,7 @@ def is_same_person(embed1, embed2, threshold=0.4):
  
 def extract_embedding(frame, box):
     """
-    박스 영역을 크롭 -> InsightFace 정렬 -> AdaFace 임베딩 추출.
+    박스 영역을 크롭 → InsightFace 정렬 → AdaFace 임베딩 추출.
     실패 시 None 반환.
     """
     img_h, img_w = frame.shape[:2]
@@ -416,7 +416,6 @@ def run_identity_pass(
         # 히트맵으로 보강
         all_boxes, all_ids = heatmap_engine.update_and_recover(
             current_boxes, current_ids, current_confs)
- 
         # ── 신원 판단 ────────────────────────────────────────
         for box, f_id in zip(all_boxes, all_ids):
             # 이미 등록자로 확정된 ID는 스킵
@@ -541,7 +540,7 @@ def process_video(input_path, output_path, user_faces_dir,
  
     # ── 1) 등록 얼굴 임베딩 수집 ───────────────────────────
     known_embeddings = []
-    face_files = glob.glob(f"{user_faces_dir}/person5.*")
+    face_files = glob.glob(f"{user_faces_dir}/person*.*")
     print(f"👤 등록된 얼굴 사진 {len(face_files)}개 로드")
  
     for img_path in face_files:
@@ -609,7 +608,7 @@ def process_video(input_path, output_path, user_faces_dir,
         frame_height=frame_height,
         known_embeddings=known_embeddings,
         pass_name="정방향",
-        embedding_interval=1,   # 매 프레임 추출
+        embedding_interval=1,   # 매 프레임 추출 (정방향은 최대 정확도)
     )
  
     # ── 5) 역방향 패스: 트래킹 + 신원 판단 ────────────────
@@ -627,7 +626,7 @@ def process_video(input_path, output_path, user_faces_dir,
         frame_height=frame_height,
         known_embeddings=known_embeddings,
         pass_name="역방향",
-        embedding_interval=3,   # 3프레임마다 임베딩 추출
+        embedding_interval=3,   # 3프레임마다 임베딩 추출 (속도·정확도 균형)
     )
  
     # 역방향 tracking_data를 정방향 인덱스로 되돌리기
@@ -681,7 +680,7 @@ def process_video(input_path, output_path, user_faces_dir,
             rw  = rx2 - rx1
             rh  = ry2 - ry1
  
-            # (a) 정방향 등록자 박스와 겹치면 -> 등록자이므로 모자이크 안 함
+            # (a) 정방향 등록자 박스와 겹치면 → 등록자이므로 모자이크 안 함
             overlap_with_registered = False
             for fbox in fwd_registered_boxes:
                 fx1, fy1, fx2, fy2 = map(int, fbox)
@@ -699,10 +698,10 @@ def process_video(input_path, output_path, user_faces_dir,
  
             # (b) 역방향에서 등록자로 확정된 ID인지 확인
             if rev_identities.get(rev_id) is True:
-                # 역방향 등록자 -> 모자이크 안 함
+                # 역방향 등록자 → 모자이크 안 함
                 continue
  
-            # (c) 정방향 모자이크 박스와 이미 겹치면 -> 중복 방지
+            # (c) 정방향 모자이크 박스와 이미 겹치면 → 중복 방지
             already_covered = False
             for fbox in fwd_mosaic_boxes:
                 fx1, fy1, fx2, fy2 = map(int, fbox)
@@ -756,8 +755,24 @@ def process_video(input_path, output_path, user_faces_dir,
         return False
  
     print("✅ ffmpeg 재인코딩 완료!")
- 
-    # ── 9) 마무리 ───────────────────────────────────────────
+
+    # ── 9) 썸네일 추출 ─────────────────────────────────────
+    thumbnail_path = output_path.replace('.mp4', '.jpg')
+    thumb_result = subprocess.run([
+        'ffmpeg', '-y',
+        '-ss', '1',
+        '-i', output_path,
+        '-vframes', '1',
+        '-q:v', '2',
+        thumbnail_path
+    ], capture_output=True, text=True, encoding='utf-8', errors='ignore')
+
+    if thumb_result.returncode == 0:
+        print(f"✅ 썸네일 생성 완료: {thumbnail_path}")
+    else:
+        print(f"⚠️ 썸네일 생성 실패 (무시하고 계속): {thumb_result.stderr}")
+
+    # ── 10) 마무리 ──────────────────────────────────────────
     if not LOCAL_TEST_MODE:
         if os.path.exists(input_path):
             os.remove(input_path)
@@ -794,8 +809,6 @@ if not LOCAL_TEST_MODE:
                 if os.path.exists(input_path):
                     os.remove(input_path)
                 user_faces_dir_path = f"user_faces/{user_id}"
-                if os.path.exists(user_faces_dir_path):
-                    shutil.rmtree(user_faces_dir_path)
  
             return success
  
@@ -831,4 +844,3 @@ if __name__ == "__main__":
                 print("\n❌ 처리 실패")
     else:
         print("서버 모드입니다. Celery 워커로 실행하세요.")
- 
