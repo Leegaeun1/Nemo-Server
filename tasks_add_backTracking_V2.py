@@ -44,33 +44,33 @@ class HeatmapEngine:
     """
  
     def __init__(self, frame_width, frame_height, grid_scale=0.1):
-        self.grid_w = int(frame_width * grid_scale)
-        self.grid_h = int(frame_height * grid_scale)
-        self.scale  = grid_scale
-        self.channels     = {}   # {track_id: heatmap(grid_h, grid_w)}
-        self.last_sizes   = {}   # {track_id: (w, h)}
-        self.last_centers = {}   # {track_id: (cx, cy)}
-        self.base_decay   = 0.96
+        self.grid_w = int(frame_width * grid_scale) # 히트맵 가로 크기(원본의 10%)
+        self.grid_h = int(frame_height * grid_scale) # 히트맵 세로 크기
+        self.scale  = grid_scale # 0.1 = 10% 축소 비율
+        self.channels     = {}   # {track_id: heatmap(grid_h, grid_w)} : 얼굴별 위치 기록
+        self.last_sizes   = {}   # {track_id: (w, h)} : 마지막으로 본 얼굴 크기
+        self.last_centers = {}   # {track_id: (cx, cy)} : 마지막으로 본 얼굴 중심
+        self.base_decay   = 0.96 # 매 프레임마다 히트맵을 4% 감쇠.(오래된 위치 희석.) => 30프레임 기준 1초뒤 30%됨
  
-    def reset_memory(self):
+    def reset_memory(self): # 씬 전환 감지 시 모든 기억 초기화!
         self.channels.clear()
         self.last_sizes.clear()
         self.last_centers.clear()
  
-    def get_visual_heatmap(self):
-        combined = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
+    def get_visual_heatmap(self): # 시각화용!
+        combined = np.zeros((self.grid_h, self.grid_w), dtype=np.float32) # 빈 히트맵 생성
         for heatmap in self.channels.values():
-            combined = np.maximum(combined, heatmap)
-        norm = np.clip(combined / 10.0 * 255, 0, 255).astype(np.uint8)
-        colored = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
-        gray = cv2.cvtColor(colored, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
-        return cv2.bitwise_and(colored, colored, mask=mask)
+            combined = np.maximum(combined, heatmap) # 모든 ID 히트맵을 최댓값으로 합성 -> 최대인부분만 볼수있도록
+        norm = np.clip(combined / 10.0 * 255, 0, 255).astype(np.uint8) # 0~255로 정규화
+        colored = cv2.applyColorMap(norm, cv2.COLORMAP_JET) # JET 컬러맵으로 시각화
+        gray = cv2.cvtColor(colored, cv2.COLOR_BGR2GRAY) 
+        _, mask = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY) # 낮은 값 영역 마스킹 
+        return cv2.bitwise_and(colored, colored, mask=mask) # 마스킹 적용해서 반환
  
     def update_and_recover(self, boxes, ids, confs):
         # 1) 모든 채널 decay
         for f_id in list(self.channels.keys()):
-            self.channels[f_id] *= self.base_decay
+            self.channels[f_id] *= self.base_decay # 매 프레임 0.96 곱하기 -> 시간 지날수록 희미..
  
         final_boxes = []
         final_ids   = []
@@ -78,47 +78,48 @@ class HeatmapEngine:
  
         for box, f_id, conf in zip(boxes, ids, confs):
             x1, y1, x2, y2 = map(int, box)
-            w, h = x2 - x1, y2 - y1
-            cx, cy = x1 + w // 2, y1 + h // 2
-            hcx = int(cx * self.scale)
+            w, h = x2 - x1, y2 - y1 # 박스 너비, 높이
+            cx, cy = x1 + w // 2, y1 + h // 2 # 중심점
+            hcx = int(cx * self.scale) # 히트맵 그리드 좌표로 변환
             hcy = int(cy * self.scale)
  
             # 2) 신규 ID → 히트맵에서 같은 위치 old_id 매핑 시도
             matched_id = f_id
-            if f_id not in self.channels:
-                best_id   = None
-                best_heat = 0.2
+            if f_id not in self.channels: # 처음 보는 ID
+                best_id   = None # 아직 후보 없음
+                best_heat = 0.2 # 최솟값 임계치(히트맵이 최소 0.2는 넘어야 인정.)
                 for old_id, heatmap in self.channels.items():
                     if 0 <= hcy < self.grid_h and 0 <= hcx < self.grid_w:
-                        if heatmap[hcy, hcx] > best_heat:
-                            best_heat = heatmap[hcy, hcx]
+                        if heatmap[hcy, hcx] > best_heat: # 현재 위치와 히트맵 값 비교!
+                            best_heat = heatmap[hcy, hcx] # 가장 높은값으로 갱신(가장 뜨겁)
                             best_id   = old_id
-                if best_id is not None:
-                    matched_id = best_id
+                if best_id is not None: # 찾았음
+                    matched_id = best_id # 같은 자리의 old_id로 교체 -> ID 연속성 유지.
  
-            if matched_id in seen_ids:
+            if matched_id in seen_ids: # 이미 이 프레임에서 처리한 ID이면 스킵!
                 continue
-            seen_ids.add(matched_id)
+            seen_ids.add(matched_id) # 첨보는 ID이면 처리!
  
             # 3) 부분 가려짐 판단
             is_full_face = True
-            if conf < 0.45:
+            if conf < 0.45: # 신뢰도 낮으면 가려진것으로 판단!
                 is_full_face = False
             elif matched_id in self.last_sizes:
                 prev_w, prev_h = self.last_sizes[matched_id]
-                if w < prev_w * 0.8 or h < prev_h * 0.8:
+                if w < prev_w * 0.8 or h < prev_h * 0.8: # 이전보다 20%이상 작아지면 가려짐
                     is_full_face = False
  
             # 4) 위치/크기 스무딩
             if matched_id in self.last_sizes:
-                if is_full_face:
+                if is_full_face: # 안가려졌음
                     prev_w, prev_h = self.last_sizes[matched_id]
                     pcx, pcy = self.last_centers[matched_id]
+                    # 이전 70% 현재30% -> 지수이동평균으로 스무딩
                     self.last_sizes[matched_id]   = (int(prev_w * 0.7 + w * 0.3),
                                                       int(prev_h * 0.7 + h * 0.3))
                     self.last_centers[matched_id] = (int(pcx * 0.7 + cx * 0.3),
                                                       int(pcy * 0.7 + cy * 0.3))
-            else:
+            else: # 처음 보는 ID이면 그냥 저장
                 self.last_sizes[matched_id]   = (w, h)
                 self.last_centers[matched_id] = (cx, cy)
  
@@ -127,8 +128,8 @@ class HeatmapEngine:
  
             # 5) 히트맵 채널 업데이트
             if matched_id not in self.channels:
-                self.channels[matched_id] = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
- 
+                self.channels[matched_id] = np.zeros((self.grid_h, self.grid_w), dtype=np.float32) # 새 히트맵 생성
+            # 스무딩된 박스 영역에 +2.0 누적, 최대 10.0 
             gx1 = max(0, int((curr_cx - curr_w / 2) * self.scale))
             gy1 = max(0, int((curr_cy - curr_h / 2) * self.scale))
             gx2 = min(self.grid_w, int((curr_cx + curr_w / 2) * self.scale))
@@ -145,6 +146,7 @@ class HeatmapEngine:
         # 6) 오래된 채널 삭제
         for f_id in list(self.channels.keys()):
             if f_id not in seen_ids and np.max(self.channels[f_id]) <= 0.5:
+                # 이 프레임에 안보이고 히트맵도 거의 희미해졌으면 삭제!
                 del self.channels[f_id]
                 self.last_centers.pop(f_id, None)
                 self.last_sizes.pop(f_id, None)
@@ -210,12 +212,12 @@ def cosine_similarity(embed1, embed2):
     """두 임베딩 벡터의 코사인 유사도 반환."""
     e1 = embed1.flatten() / (np.linalg.norm(embed1) + 1e-8)
     e2 = embed2.flatten() / (np.linalg.norm(embed2) + 1e-8)
-    return float(np.dot(e1, e2))
+    return float(np.dot(e1, e2)) # 내적
  
  
 def is_same_person(embed1, embed2, threshold=0.4):
     sim = cosine_similarity(embed1, embed2)
-    return sim > threshold, sim
+    return sim > threshold, sim # threshold넘기면 같은사람임
  
  
 def extract_embedding(frame, box):
@@ -225,30 +227,32 @@ def extract_embedding(frame, box):
     """
     img_h, img_w = frame.shape[:2]
     x1, y1, x2, y2 = map(int, box)
+    # 박스 주변에 30% 패딩 추가!(얼굴 주변 여백 확보)
     pad_w = int((x2 - x1) * 0.3)
     pad_h = int((y2 - y1) * 0.3)
     rx1 = max(0, x1 - pad_w)
     ry1 = max(0, y1 - pad_h)
     rx2 = min(img_w, x2 + pad_w)
     ry2 = min(img_h, y2 + pad_h)
-    face_crop = frame[ry1:ry2, rx1:rx2]
+    face_crop = frame[ry1:ry2, rx1:rx2] # 패딩 포함해서 크롭
  
     if face_crop.size == 0:
         return None
  
-    faces = face_aligner.get(face_crop)
+    faces = face_aligner.get(face_crop) # InsightFace로 얼굴 재검출
     if not faces:
         return None
- 
+    # 가장 큰 얼굴 선택
     target = sorted(faces,
                     key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]),
                     reverse=True)[0]
+    # 눈/코 랜드마크 기준으로 112x112 정렬 크롭!
     aligned_bgr = face_align.norm_crop(face_crop, landmark=target.kps, image_size=112)
     aligned_rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB)
     tensor = adaface_transform(Image.fromarray(aligned_rgb)).unsqueeze(0).to(device)
  
     with torch.no_grad():
-        embedding = adaface_model(tensor)[0].cpu().numpy()
+        embedding = adaface_model(tensor)[0].cpu().numpy() # 임베딩 벡터 반환
     return embedding
  
  
@@ -369,13 +373,13 @@ def run_identity_pass(
     """
     print(f"🔄 {pass_name} 시작... "
           f"(총 {len(frames_list)} 프레임, 임베딩 interval={embedding_interval})")
- 
+    # 패스마다 새 히트맵 엔진 생성
     heatmap_engine    = HeatmapEngine(frame_width, frame_height, grid_scale=0.1)
     global_identities = {}   # {track_id: True / False}
-    identity_votes    = {}   # {track_id: int}
+    identity_votes    = {}   # {track_id: int} : 누적 투표수
     # 각 track_id 별로 마지막으로 임베딩을 시도한 프레임 인덱스 기록
     last_embed_frame  = {}   # {track_id: int}
-    tracking_data     = []   # [(all_boxes, all_ids), ...]
+    tracking_data     = []   # [(all_boxes, all_ids), ...] # 프레임별 트래킹 결과 저장
     prev_frame        = None
     scene_changed     = False  # 씬 체인지 직후 플래그
  
@@ -383,31 +387,33 @@ def run_identity_pass(
         # ── 씬 체인지 감지 ──────────────────────────────────
         scene_changed = False
         if prev_frame is not None:
-            small_curr = cv2.resize(frame, (64, 64))
+            small_curr = cv2.resize(frame, (64, 64)) # 64x64로 축소해서 빠르게 비교
             small_prev = cv2.resize(prev_frame, (64, 64))
             diff = cv2.absdiff(small_curr, small_prev)
-            if np.mean(diff) > scene_change_threshold:
-                heatmap_engine.reset_memory()
+            if np.mean(diff) > scene_change_threshold: # 평균 픽셀 차이 > 30이면 씬 전환
+                heatmap_engine.reset_memory() # 초기화
                 scene_changed = True   # 씬 전환 직후 -> 무조건 임베딩 추출
         prev_frame = frame.copy()
  
         # ── YOLO 트래킹 ─────────────────────────────────────
         current_boxes, current_ids, current_confs = [], [], []
         try:
+            # YOLO 트래킹 , persist=True(프레임 간 ID 유지)
             results = face_detector.track(
                 frame, persist=True, conf=0.30, imgsz=640,
                 device=device, verbose=False)
             if (results and len(results) > 0
                     and results[0].boxes is not None
                     and results[0].boxes.id is not None):
-                current_boxes = results[0].boxes.xyxy.cpu().numpy().tolist()
-                current_ids   = results[0].boxes.id.int().cpu().tolist()
-                current_confs = results[0].boxes.conf.cpu().tolist()
+                current_boxes = results[0].boxes.xyxy.cpu().numpy().tolist() # [x1,y1,x2,y2] 목록
+                current_ids   = results[0].boxes.id.int().cpu().tolist() # 트래킹 ID 목록
+                current_confs = results[0].boxes.conf.cpu().tolist() # 신뢰도 목록
         except (IndexError, Exception) as e:
             # track() 내부 오류(tracker 상태 불일치 등) -> 해당 프레임 스킵
             if idx % 100 == 0:
                 print(f"  [{pass_name}] 프레임 {idx} track() 오류 스킵: {e}")
- 
+
+        # 히트맵으로 보강
         all_boxes, all_ids = heatmap_engine.update_and_recover(
             current_boxes, current_ids, current_confs)
         # ── 신원 판단 ────────────────────────────────────────
@@ -435,7 +441,7 @@ def run_identity_pass(
  
                 if is_reg:
                     identity_votes[f_id] = identity_votes.get(f_id, 0) + 1
-                    if identity_votes[f_id] >= vote_requirement:
+                    if identity_votes[f_id] >= vote_requirement: # 3번 이상 등록자로 판단되면 확정!
                         global_identities[f_id] = True
                         print(f"  ✅ [{pass_name}] ID {f_id} → 등록자 확정 "
                               f"(프레임 {idx}, sim={best_sim:.3f})")
@@ -493,7 +499,7 @@ def merge_identities(
         rev_boxes, rev_ids = rev_tracking[frame_idx]
  
         for rev_box, rev_id in zip(rev_boxes, rev_ids):
-            if rev_id not in rev_registered_ids:
+            if rev_id not in rev_registered_ids: # 역방향에 X
                 continue  # 역방향에서 등록자가 아닌 ID는 무시
  
             rx1, ry1, rx2, ry2 = map(int, rev_box)
@@ -512,7 +518,7 @@ def merge_identities(
                 ref_w = max(rw, fw)
                 ref_h = max(rh, fh)
  
-                if centers_close(rcx, rcy, fcx, fcy, ref_w, ref_h, ratio=0.8):
+                if centers_close(rcx, rcy, fcx, fcy, ref_w, ref_h, ratio=0.8): # 같은 프레임에서 위치 겹침
                     if merged.get(fwd_id) is not True:
                         merged[fwd_id] = True
                         print(f"  ✅ [병합] 정방향 ID {fwd_id} → 등록자로 업데이트 "
