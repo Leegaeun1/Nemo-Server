@@ -1,0 +1,73 @@
+Collecting tensorflow
+  Using cached tensorflow-2.20.0-cp39-cp39-win_amd64.whl.metadata (4.6 kB)
+Requirement already satisfied: numpy in .\venv\lib\site-packages (1.24.3)
+Collecting numpy
+  Using cached numpy-2.0.2-cp39-cp39-win_amd64.whl.metadata (59 kB)
+Requirement already satisfied: typing-extensions in .\venv\lib\site-packages (4.5.0)
+Collecting typing-extensions
+  Using cached typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+Requirement already satisfied: absl-py>=1.0.0 in .\venv\lib\site-packages (from tensorflow) (2.3.1)
+Requirement already satisfied: astunparse>=1.6.0 in .\venv\lib\site-packages (from tensorflow) (1.6.3)
+Requirement already satisfied: flatbuffers>=24.3.25 in .\venv\lib\site-packages (from tensorflow) (25.12.19)
+Requirement already satisfied: gast!=0.5.0,!=0.5.1,!=0.5.2,>=0.2.1 in .\venv\lib\site-packages (from tensorflow) (0.4.0)
+Requirement already satisfied: google_pasta>=0.1.1 in .\venv\lib\site-packages (from tensorflow) (0.2.0)
+Requirement already satisfied: libclang>=13.0.0 in .\venv\lib\site-packages (from tensorflow) (18.1.1)
+Requirement already satisfied: opt_einsum>=2.3.2 in .\venv\lib\site-packages (from tensorflow) (3.4.0)
+Requirement already satisfied: packaging in .\venv\lib\site-packages (from tensorflow) (26.0)
+Collecting protobuf>=5.28.0 (from tensorflow)
+  Using cached protobuf-6.33.5-cp39-cp39-win_amd64.whl.metadata (593 bytes)
+Requirement already satisfied: requests<3,>=2.21.0 in .\venv\lib\site-packages (from tensorflow) (2.32.5)
+Requirement already satisfied: setuptools in .\venv\lib\site-packages (from tensorflow) (58.1.0)
+Requirement already satisfied: six>=1.12.0 in .\venv\lib\site-packages (from tensorflow) (1.17.0)
+Requirement already satisfied: termcolor>=1.1.0 in .\venv\lib\site-packages (from tensorflow) (3.1.0)
+Requirement already satisfied: wrapt>=1.11.0 in .\venv\lib\site-packages (from tensorflow) (2.1.2)
+Requirement already satisfied: grpcio<2.0,>=1.24.3 in .\venv\lib\site-packages (from tensorflow) (1.74.0)
+Collecting tensorboard~=2.20.0 (from tensorflow)
+  Using cached tensorboard-2.20.0-py3-none-any.whl.metadata (1.8 kB)
+Collecting keras>=3.10.0 (from tensorflow)
+  Using cached keras-3.10.0-py3-none-any.whl.metadata (6.0 kB)
+Requirement already satisfied: h5py>=3.11.0 in .\venv\lib\site-packages (from tensorflow) (3.14.0)
+Requirement already satisfied: ml_dtypes<1.0.0,>=0.5.1 in .\venv\lib\site-packages (from tensorflow) (0.5.4)
+Requirement already satisfied: charset_normalizer<4,>=2 in .\venv\lib\site-packages (from requests<3,>=2.21.0->tensorflow) (3.4.5)
+Requirement already satisfied: idna<4,>=2.5 in .\venv\lib\site-packages (from requests<3,>=2.21.0->tensorflow) (3.11)
+Requirement already satisfied: urllib3<3,>=1.21.1 in .\venv\lib\site-packages (from requests<3,>=2.21.0->tensorflow) (2.6.3)
+Requirement already satisfied: certifi>=2017.4.17 in .\venv\lib\site-packages (from requests<3,>=2.21.0->tensorflow) (2026.2.25)
+Requirement already satisfied: markdown>=2.6.8 in .\venv\lib\site-packages (from tensorboard~=2.20.0->tensorflow) (3.9)
+Requirement already satisfied: pillow in .\venv\lib\site-packages (from tensorboard~=2.20.0->tensorflow) (11.3.0)
+Requirement already satisfied: tensorboard-data-server<0.8.0,>=0.7.0 in .\venv\lib\site-packages (from tensorboard~=2.20.0->tensorflow) (0.7.2)
+Requirement already satisfied: werkzeug>=1.0.1 in .\venv\lib\site-packages (from tensorboard~=2.20.0->tensorflow) (3.1.6)
+Requirement already satisfied: wheel<1.0,>=0.23.0 in .\venv\lib\site-packages (from astunparse>=1.6.0->tensorflow) (0.46.3)
+Requirement already satisfied: rich in .\venv\lib\site-packages (from keras>=3.10.0->tensorflow) (14.3.3)
+Requirement already satisfied: namex in .\venv\lib\site-packages (from keras>=3.10.0->tensorflow) (0.1.0)
+Requirement already satisfied: optree in .\venv\lib\site-packages (from keras>=3.10.0->tensorflow) (0.19.0)
+Requirement already satisfied: importlib-metadata>=4.4 in .\venv\lib\site-packages (from markdown>=2.6.8->tensorboard~=2.20.0->tensorflow) (8.7.1)
+Requirement already satisfied: zipp>=3.20 in .\venv\lib\site-packages (from importlib-metadata>=4.4->markdown>=2.6.8->tensorboard~=2.20.0->tensorflow) (3.23.0)
+Requirement already satisfied: markupsafe>=2.1.1 in .\venv\lib\site-packages (from werkzeug>=1.0.1->tensorboard~=2.20.0->tensorflow) (3.0.3)
+Requirement already satisfied: markdown-it-py>=2.2.0 in .\venv\lib\site-packages (from rich->keras>=3.10.0->tensorflow) (3.0.0)
+Requirement already satisfied: pygments<3.0.0,>=2.13.0 in .\venv\lib\site-packages (from rich->keras>=3.10.0->tensorflow) (2.19.2)
+Requirement already satisfied: mdurl~=0.1 in .\venv\lib\site-packages (from markdown-it-py>=2.2.0->rich->keras>=3.10.0->tensorflow) (0.1.2)
+Using cached tensorflow-2.20.0-cp39-cp39-win_amd64.whl (331.7 MB)
+Using cached tensorboard-2.20.0-py3-none-any.whl (5.5 MB)
+Using cached numpy-2.0.2-cp39-cp39-win_amd64.whl (15.9 MB)
+Using cached typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+Using cached keras-3.10.0-py3-none-any.whl (1.4 MB)
+Using cached protobuf-6.33.5-cp39-cp39-win_amd64.whl (437 kB)
+Installing collected packages: typing-extensions, protobuf, numpy, tensorboard, keras, tensorflow
+  Attempting uninstall: typing-extensions
+    Found existing installation: typing_extensions 4.5.0
+    Uninstalling typing_extensions-4.5.0:
+      Successfully uninstalled typing_extensions-4.5.0
+  Attempting uninstall: protobuf
+    Found existing installation: protobuf 4.25.8
+    Uninstalling protobuf-4.25.8:
+      Successfully uninstalled protobuf-4.25.8
+  Attempting uninstall: numpy
+    Found existing installation: numpy 1.24.3
+    Uninstalling numpy-1.24.3:
+      Successfully uninstalled numpy-1.24.3
+  Attempting uninstall: tensorboard
+    Found existing installation: tensorboard 2.13.0
+    Uninstalling tensorboard-2.13.0:
+      Successfully uninstalled tensorboard-2.13.0
+
+Successfully installed keras-3.10.0 numpy-2.0.2 protobuf-6.33.5 tensorboard-2.20.0 tensorflow-2.20.0 typing-extensions-4.15.0

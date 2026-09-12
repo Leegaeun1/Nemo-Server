@@ -1,0 +1,7 @@
+path: C:/Users/user/Documents/GitHub/Nemo-Server/dataset_performance_up
+train: images/train
+val: images/val
+test: images/test
+
+nc: 1
+names: ['face']
