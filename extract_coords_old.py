@@ -10,7 +10,7 @@ VIDEOS = ["video_01", "video_02", "video_03", "video_04", "video_05", "video_06"
 for video_name in VIDEOS:
     VIDEO_PATH  = f"videos/{video_name}.mp4"
     OUTPUT_JSON = f"results/{video_name}_coords_old.json"
-    MODEL_PATH = "models/yolov10n-face.pt"
+    MODEL_PATH = "models/yolov12s-face.pt"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     face_detector = YOLO(MODEL_PATH).to(device)

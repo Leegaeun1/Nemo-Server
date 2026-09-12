@@ -10,6 +10,7 @@ from PIL import Image
 import math
 import subprocess
 import shutil
+import tempfile
 
 # ==========================================
 # 로컬 테스트용 설정
@@ -324,8 +325,8 @@ def send_push_notification(token, output_path):
         file_size_mb  = os.path.getsize(output_path) / (1024 * 1024)
         message = messaging.Message(
             notification=messaging.Notification(
-                title='NEMO 비식별화 완료!',
-                body='비식별화 처리가 끝났습니다! 앱으로 들어와서 다운로드해주세요.',
+                title='NEMO De-identification Complete!',
+                body='The de-identification process is finished! Please open the app and download it.',
             ),
             data={
                 "output_filename": os.path.basename(output_path),
@@ -343,7 +344,7 @@ def send_push_notification(token, output_path):
 # 신원 판단 공용 로직 (정방향 / 역방향 공통)
 # ==========================================
 def run_identity_pass(
-    frames_list,
+    frame_paths,
     frame_width,
     frame_height,
     known_embeddings,
@@ -353,86 +354,67 @@ def run_identity_pass(
     scene_change_threshold=30.0,
     embedding_interval=1,
 ):
-    """
-    frames_list 순서대로 프레임을 순회하며 YOLO 트래킹 + 신원 판단을 수행한다.
- 
-    파라미터:
-        embedding_interval : 몇 프레임마다 임베딩을 추출할지 결정.
-                             1 = 매 프레임 (정방향 기본값, 가장 정확)
-                             3 = 3프레임마다 (역방향 기본값, 속도·정확도 균형)
-                             씬 체인지가 감지된 직후 프레임은 interval과 무관하게
-                             항상 추출하여 새 씬의 첫 얼굴을 놓치지 않는다.
- 
-    반환값:
-        tracking_data     : List[ (all_boxes, all_ids) ]  — frames_list 순서 기준
-        global_identities : dict { track_id -> True(등록자) / False(비등록자) }
- 
-    역방향 패스일 때는 frames_list 를 이미 뒤집어서 넣으면 된다.
-    tracking_data 도 frames_list 순서 그대로 반환되므로,
-    역방향으로 넣었다면 호출 측에서 다시 reverse() 해서 정방향 인덱스에 맞춰야 한다.
-    """
     print(f"🔄 {pass_name} 시작... "
-          f"(총 {len(frames_list)} 프레임, 임베딩 interval={embedding_interval})")
-    # 패스마다 새 히트맵 엔진 생성
+          f"(총 {len(frame_paths)} 프레임, 임베딩 interval={embedding_interval})")
+    
     heatmap_engine    = HeatmapEngine(frame_width, frame_height, grid_scale=0.1)
-    global_identities = {}   # {track_id: True / False}
-    identity_votes    = {}   # {track_id: int} : 누적 투표수
-    # 각 track_id 별로 마지막으로 임베딩을 시도한 프레임 인덱스 기록
-    last_embed_frame  = {}   # {track_id: int}
-    tracking_data     = []   # [(all_boxes, all_ids), ...] # 프레임별 트래킹 결과 저장
-    prev_frame        = None
-    scene_changed     = False  # 씬 체인지 직후 플래그
- 
-    for idx, frame in enumerate(frames_list):
+    global_identities = {}   
+    identity_votes    = {}   
+    last_embed_frame  = {}   
+    tracking_data     = []   
+    prev_frame_small  = None # 비교용 축소 프레임만 메모리에 유지
+    scene_changed     = False  
+
+    for idx, path in enumerate(frame_paths):
+        # ── 디스크에서 현재 프레임만 RAM으로 로드 ──
+        frame = cv2.imread(path)
+        if frame is None:
+            continue
+
         # ── 씬 체인지 감지 ──────────────────────────────────
         scene_changed = False
-        if prev_frame is not None:
-            small_curr = cv2.resize(frame, (64, 64)) # 64x64로 축소해서 빠르게 비교
-            small_prev = cv2.resize(prev_frame, (64, 64))
-            diff = cv2.absdiff(small_curr, small_prev)
-            if np.mean(diff) > scene_change_threshold: # 평균 픽셀 차이 > 30이면 씬 전환
-                heatmap_engine.reset_memory() # 초기화
-                scene_changed = True   # 씬 전환 직후 -> 무조건 임베딩 추출
-        prev_frame = frame.copy()
+        small_curr = cv2.resize(frame, (64, 64))
+        
+        if prev_frame_small is not None:
+            diff = cv2.absdiff(small_curr, prev_frame_small)
+            if np.mean(diff) > scene_change_threshold: 
+                heatmap_engine.reset_memory() 
+                scene_changed = True   
+        prev_frame_small = small_curr.copy()
  
         # ── YOLO 트래킹 ─────────────────────────────────────
         current_boxes, current_ids, current_confs = [], [], []
         try:
-            # YOLO 트래킹 , persist=True(프레임 간 ID 유지)
             results = face_detector.track(
                 frame, persist=True, conf=0.30, imgsz=640,
                 device=device, verbose=False)
             if (results and len(results) > 0
                     and results[0].boxes is not None
                     and results[0].boxes.id is not None):
-                current_boxes = results[0].boxes.xyxy.cpu().numpy().tolist() # [x1,y1,x2,y2] 목록
-                current_ids   = results[0].boxes.id.int().cpu().tolist() # 트래킹 ID 목록
-                current_confs = results[0].boxes.conf.cpu().tolist() # 신뢰도 목록
+                current_boxes = results[0].boxes.xyxy.cpu().numpy().tolist() 
+                current_ids   = results[0].boxes.id.int().cpu().tolist() 
+                current_confs = results[0].boxes.conf.cpu().tolist() 
         except (IndexError, Exception) as e:
-            # track() 내부 오류(tracker 상태 불일치 등) -> 해당 프레임 스킵
             if idx % 100 == 0:
                 print(f"  [{pass_name}] 프레임 {idx} track() 오류 스킵: {e}")
 
         # 히트맵으로 보강
         all_boxes, all_ids = heatmap_engine.update_and_recover(
             current_boxes, current_ids, current_confs)
+            
         # ── 신원 판단 ────────────────────────────────────────
         for box, f_id in zip(all_boxes, all_ids):
-            # 이미 등록자로 확정된 ID는 스킵
             if global_identities.get(f_id) is True:
                 continue
  
-            # ── interval 체크 ──────────────────────────────
-            # 씬 체인지 직후거나, 이 ID에 대해 interval 이상 지났을 때만 추출
             last_idx = last_embed_frame.get(f_id, -999)
             should_extract = (
-                scene_changed                          # 씬 전환 직후는 무조건
-                or (idx - last_idx) >= embedding_interval  # interval 도달
+                scene_changed or (idx - last_idx) >= embedding_interval  
             )
             if not should_extract:
                 continue
  
-            last_embed_frame[f_id] = idx  # 추출 시도 시점 갱신
+            last_embed_frame[f_id] = idx  
  
             try:
                 embedding = extract_embedding(frame, box)
@@ -441,12 +423,11 @@ def run_identity_pass(
  
                 if is_reg:
                     identity_votes[f_id] = identity_votes.get(f_id, 0) + 1
-                    if identity_votes[f_id] >= vote_requirement: # 3번 이상 등록자로 판단되면 확정!
+                    if identity_votes[f_id] >= vote_requirement: 
                         global_identities[f_id] = True
                         print(f"  ✅ [{pass_name}] ID {f_id} → 등록자 확정 "
                               f"(프레임 {idx}, sim={best_sim:.3f})")
                 else:
-                    # 아직 비등록자로만 표시 (나중에 뒤집힐 수 있으므로 False로만 기록)
                     if f_id not in global_identities:
                         global_identities[f_id] = False
  
@@ -456,10 +437,9 @@ def run_identity_pass(
         tracking_data.append((all_boxes, all_ids))
  
         if idx % 100 == 0:
-            print(f"  [{pass_name}] {idx}/{len(frames_list)} 프레임 완료")
+            print(f"  [{pass_name}] {idx}/{len(frame_paths)} 프레임 완료")
  
-    print(f"✅ {pass_name} 완료 — "
-          f"등록자 ID: {[k for k,v in global_identities.items() if v]}")
+    print(f"✅ {pass_name} 완료 — 등록자 ID: {[k for k,v in global_identities.items() if v]}")
     return tracking_data, global_identities
  
  
@@ -545,29 +525,21 @@ def process_video(input_path, output_path, user_faces_dir,
  
     for img_path in face_files:
         img = cv2.imread(img_path)
-        if img is None:
-            continue
+        if img is None: continue
         faces = face_aligner.get(img)
-        if not faces:
-            print(f"  ⚠️ 얼굴 미검출: {img_path}")
-            continue
-        target = sorted(faces,
-                        key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]),
-                        reverse=True)[0]
+        if not faces: continue
+        target = sorted(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]), reverse=True)[0]
         aligned_bgr = face_align.norm_crop(img, landmark=target.kps, image_size=112)
         aligned_rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB)
         tensor = adaface_transform(Image.fromarray(aligned_rgb)).unsqueeze(0).to(device)
         with torch.no_grad():
             emb = adaface_model(tensor)[0].cpu().numpy()
         known_embeddings.append(emb)
-        print(f"  ✅ 임베딩 추출 완료: {os.path.basename(img_path)}")
- 
-    print(f"\n✅ known_embeddings: {len(known_embeddings)}개")
     if len(known_embeddings) == 0:
         print("❌ 등록 얼굴 임베딩 0개 — 처리 중단")
         return False
  
-    # ── 2) 영상 정보 파악 ───────────────────────────────────
+    # ── 2) 영상 정보 파악 & 3) 프레임을 디스크에 임시 저장 (메모리 절약) ───
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         print("❌ 비디오를 열 수 없습니다.")
@@ -576,60 +548,60 @@ def process_video(input_path, output_path, user_faces_dir,
     fps          = cap.get(cv2.CAP_PROP_FPS) or 30
     frame_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
- 
-    # ── 3) 전체 프레임 메모리 로드 ─────────────────────────
-    print(f"\n📂 전체 프레임 로드 중... ({total_frames} 프레임)")
-    all_frames = []
+    
+    # 임시 디렉토리 생성 (자동 삭제를 위해 tempfile 사용)
+    temp_dir = tempfile.mkdtemp(prefix="nemo_frames_")
+    print(f"\n📂 프레임 디스크 캐싱 중... (RAM 절약 모드 -> {temp_dir})")
+    
+    frame_paths = []
+    frame_count = 0
     while cap.isOpened():
         success, frame = cap.read()
-        if not success:
-            break
-        all_frames.append(frame)
+        if not success: break
+        
+        frame_path = os.path.join(temp_dir, f"frame_{frame_count:06d}.jpg")
+        cv2.imwrite(frame_path, frame)
+        frame_paths.append(frame_path)
+        frame_count += 1
     cap.release()
  
-    total_frames = len(all_frames)
-    print(f"✅ {total_frames} 프레임 로드 완료\n")
+    total_frames = len(frame_paths)
+    print(f"✅ {total_frames} 프레임 디스크 캐싱 완료\n")
  
-    os.makedirs(
-        os.path.dirname(output_path) if os.path.dirname(output_path) else ".",
-        exist_ok=True)
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
  
-    # ── 4) 정방향 패스: 트래킹 + 신원 판단 ────────────────
+    # ── 4) 정방향 패스 ────────────────
     print("\n" + "─"*50)
     print("▶  정방향 패스")
     print("─"*50)
-    # YOLO tracker 상태 초기화 (정방향 시작 전)
     reset_tracker()
  
     fwd_tracking, fwd_identities = run_identity_pass(
-        frames_list=all_frames,
+        frame_paths=frame_paths, # 리스트 대신 경로 전달
         frame_width=frame_width,
         frame_height=frame_height,
         known_embeddings=known_embeddings,
         pass_name="정방향",
-        embedding_interval=1,   # 매 프레임 추출 (정방향은 최대 정확도)
+        embedding_interval=1,   
     )
  
-    # ── 5) 역방향 패스: 트래킹 + 신원 판단 ────────────────
+    # ── 5) 역방향 패스 ────────────────
     print("\n" + "─"*50)
     print("◀  역방향 패스")
     print("─"*50)
-    # YOLO tracker 상태 초기화 (역방향 시작 전)
     reset_tracker()
  
-    frames_reversed = list(reversed(all_frames))
+    # 역방향 처리를 위해 경로 리스트만 뒤집음
+    rev_paths = list(reversed(frame_paths))
  
     rev_tracking_reversed, rev_identities = run_identity_pass(
-        frames_list=frames_reversed,
+        frame_paths=rev_paths,
         frame_width=frame_width,
         frame_height=frame_height,
         known_embeddings=known_embeddings,
         pass_name="역방향",
-        embedding_interval=3,   # 3프레임마다 임베딩 추출 (속도·정확도 균형)
+        embedding_interval=5,   # 속도 개선 최우선: 역방향 인터벌을 3 -> 5로 대폭 상향
     )
- 
-    # 역방향 tracking_data를 정방향 인덱스로 되돌리기
     rev_tracking = list(reversed(rev_tracking_reversed))
  
     # ── 6) 신원 정보 병합 ───────────────────────────────────
@@ -642,9 +614,9 @@ def process_video(input_path, output_path, user_faces_dir,
         total_frames=total_frames,
     )
  
-    # ── 7) 렌더링 ───────────────────────────────────────────
+    # ── 7) 렌더링 (디스크에서 하나씩 꺼내서 바로 영상으로 쓰기) ─────
     print("\n" + "─"*50)
-    print("🎬 렌더링 시작...")
+    print("🎬 렌더링 및 모자이크 적용 시작...")
     print("─"*50)
  
     out = cv2.VideoWriter(
@@ -653,16 +625,15 @@ def process_video(input_path, output_path, user_faces_dir,
         fps,
         (frame_width, frame_height))
  
-    for frame_idx, frame in enumerate(all_frames):
-        frame = frame.copy()
-        img_h, img_w = frame.shape[:2]
- 
+    for frame_idx, path in enumerate(frame_paths):
+        frame = cv2.imread(path) # 필요한 순간에만 RAM에 로드
+        if frame is None: continue
+
         fwd_boxes, fwd_ids = fwd_tracking[frame_idx]
         rev_boxes, rev_ids = rev_tracking[frame_idx]
  
-        # ── 정방향: 비등록자 모자이크 박스 수집 ─────────────
-        fwd_mosaic_boxes   = []   # 정방향에서 확정된 모자이크 박스
-        fwd_registered_boxes = []  # 정방향 등록자 박스 (역방향 비교용)
+        fwd_mosaic_boxes   = []   
+        fwd_registered_boxes = []  
  
         for box, f_id in zip(fwd_boxes, fwd_ids):
             if merged_identities.get(f_id) is True:
@@ -670,58 +641,38 @@ def process_video(input_path, output_path, user_faces_dir,
             else:
                 fwd_mosaic_boxes.append(box)
  
-        # ── 역방향 보강: 정방향에서 놓쳤거나 처음부터 가려진 얼굴 ──
         rev_extra_mosaic = []
- 
         for rev_box, rev_id in zip(rev_boxes, rev_ids):
             rx1, ry1, rx2, ry2 = map(int, rev_box)
-            rcx = (rx1 + rx2) / 2
-            rcy = (ry1 + ry2) / 2
-            rw  = rx2 - rx1
-            rh  = ry2 - ry1
+            rcx, rcy = (rx1 + rx2) / 2, (ry1 + ry2) / 2
+            rw, rh  = rx2 - rx1, ry2 - ry1
  
-            # (a) 정방향 등록자 박스와 겹치면 → 등록자이므로 모자이크 안 함
             overlap_with_registered = False
             for fbox in fwd_registered_boxes:
                 fx1, fy1, fx2, fy2 = map(int, fbox)
-                fcx = (fx1 + fx2) / 2
-                fcy = (fy1 + fy2) / 2
-                fw  = fx2 - fx1
-                fh  = fy2 - fy1
-                if centers_close(rcx, rcy, fcx, fcy,
-                                  max(rw, fw), max(rh, fh), ratio=0.8):
+                fcx, fcy = (fx1 + fx2) / 2, (fy1 + fy2) / 2
+                fw, fh  = fx2 - fx1, fy2 - fy1
+                if centers_close(rcx, rcy, fcx, fcy, max(rw, fw), max(rh, fh), ratio=0.8):
                     overlap_with_registered = True
                     break
  
-            if overlap_with_registered:
+            if overlap_with_registered or rev_identities.get(rev_id) is True:
                 continue
  
-            # (b) 역방향에서 등록자로 확정된 ID인지 확인
-            if rev_identities.get(rev_id) is True:
-                # 역방향 등록자 → 모자이크 안 함
-                continue
- 
-            # (c) 정방향 모자이크 박스와 이미 겹치면 → 중복 방지
             already_covered = False
             for fbox in fwd_mosaic_boxes:
                 fx1, fy1, fx2, fy2 = map(int, fbox)
-                fcx = (fx1 + fx2) / 2
-                fcy = (fy1 + fy2) / 2
-                fw  = fx2 - fx1
-                fh  = fy2 - fy1
-                if centers_close(rcx, rcy, fcx, fcy,
-                                  max(rw, fw), max(rh, fh), ratio=0.8):
+                fcx, fcy = (fx1 + fx2) / 2, (fy1 + fy2) / 2
+                fw, fh  = fx2 - fx1, fy2 - fy1
+                if centers_close(rcx, rcy, fcx, fcy, max(rw, fw), max(rh, fh), ratio=0.8):
                     already_covered = True
                     break
  
             if not already_covered:
                 rev_extra_mosaic.append(rev_box)
  
-        # ── 모자이크 적용 ────────────────────────────────────
-        for box in fwd_mosaic_boxes:
-            apply_mosaic(frame, box)
- 
-        for box in rev_extra_mosaic:
+        # 모자이크 적용
+        for box in fwd_mosaic_boxes + rev_extra_mosaic:
             apply_mosaic(frame, box)
  
         out.write(frame)
@@ -731,6 +682,9 @@ def process_video(input_path, output_path, user_faces_dir,
  
     out.release()
     print("✅ 렌더링 완료")
+    # ── 임시 디렉토리 청소  ──
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    print("임시 프레임 폴더 정리 완료")
  
     # ── 8) ffmpeg 재인코딩 ─────────────────────────────────
     print("\n🔧 ffmpeg 재인코딩 중...")
@@ -738,14 +692,9 @@ def process_video(input_path, output_path, user_faces_dir,
     os.rename(output_path, temp_path)
  
     result = subprocess.run([
-        'ffmpeg', '-y',
-        '-i', temp_path,
-        '-vcodec', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-preset', 'fast',
-        '-crf', '23',
-        '-movflags', '+faststart',
-        output_path
+        'ffmpeg', '-y', '-i', temp_path, '-vcodec', 'libx264',
+        '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '23',
+        '-movflags', '+faststart', output_path
     ], capture_output=True, text=True, encoding='utf-8', errors='ignore')
  
     os.remove(temp_path)
@@ -759,18 +708,9 @@ def process_video(input_path, output_path, user_faces_dir,
     # ── 9) 썸네일 추출 ─────────────────────────────────────
     thumbnail_path = output_path.replace('.mp4', '.jpg')
     thumb_result = subprocess.run([
-        'ffmpeg', '-y',
-        '-ss', '1',
-        '-i', output_path,
-        '-vframes', '1',
-        '-q:v', '2',
-        thumbnail_path
+        'ffmpeg', '-y', '-ss', '1', '-i', output_path, '-vframes', '1',
+        '-q:v', '2', thumbnail_path
     ], capture_output=True, text=True, encoding='utf-8', errors='ignore')
-
-    if thumb_result.returncode == 0:
-        print(f"✅ 썸네일 생성 완료: {thumbnail_path}")
-    else:
-        print(f"⚠️ 썸네일 생성 실패 (무시하고 계속): {thumb_result.stderr}")
 
     # ── 10) 마무리 ──────────────────────────────────────────
     if not LOCAL_TEST_MODE:

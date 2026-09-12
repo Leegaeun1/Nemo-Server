@@ -4,7 +4,7 @@ import os
 import uuid
 import glob
 from celery_worker import celery_app
-import tasks_add_backTracking_V2 as tasks  # tasks.py를 불러와야 Celery가 작업을 인식합니다.
+import tasks_add_backTracking_V2 as tasks
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 import hashlib
@@ -25,7 +25,7 @@ os.makedirs("outputs", exist_ok=True)
 async def upload_video(
     video: UploadFile = File(...),
     device_token: str = Form(...),
-    user_id: str = Form(...)  # 추가
+    user_id: str = Form(...)
 ):
     file_id = str(uuid.uuid4())
     input_path = f"uploads/{file_id}_{video.filename}"
@@ -49,7 +49,7 @@ async def delete_face(body: Dict = Body(...)):
     filename = body.get('filename')
     file_path = f"user_faces/{user_id}/{filename}"
     
-    print(f"삭제 요청: {file_path}")  # ✅ 어떤 경로로 오는지 확인
+    print(f"삭제 요청: {file_path}")
     print(f"파일 존재 여부: {os.path.exists(file_path)}")
     
     if os.path.exists(file_path):
@@ -61,7 +61,7 @@ async def delete_face(body: Dict = Body(...)):
 async def upload_face(
     file: UploadFile = File(...),
     device_token: str = Form(...),
-    user_id: str = Form(...)  # 추가
+    user_id: str = Form(...)
 ):
     user_dir = f"user_faces/{user_id}"  # 해시 불필요, user_id는 UUID라 안전
     os.makedirs(user_dir, exist_ok=True)

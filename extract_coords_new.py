@@ -12,12 +12,12 @@ from ultralytics import YOLO
 VIDEOS = ["video_01", "video_02", "video_03", "video_04", "video_05",
           "video_06", "video_07", "video_08", "video_09", "video_10"]
 
-MODEL_PATH = "models/yolov10n-face.pt"
+MODEL_PATH = "models/yolov12s-face.pt"
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 face_detector = YOLO(MODEL_PATH).to(device)
 
 
-def iou(b1, b2):
+def iou(b1, b2): # IoU로 정방향 + 역방향..
     x1 = max(b1[0], b2[0]); y1 = max(b1[1], b2[1])
     x2 = min(b1[2], b2[2]); y2 = min(b1[3], b2[3])
     inter = max(0, x2 - x1) * max(0, y2 - y1)
@@ -31,7 +31,7 @@ def reset_tracker():
     except Exception:
         pass
 
-def overlaps_any(box, existing, thresh=0.3):
+def overlaps_any(box, existing, thresh=0.3): # 박스들 하나하나와 IoU계산해서 하나라도 임계값 넘으면 True = 있는것임. 
     return any(iou(box, e) >= thresh for e in existing)
 
 
@@ -154,9 +154,9 @@ def run_pass(frames, frame_width, frame_height, label=""):
         prev_frame = frame.copy()
 
         results = face_detector.track(frame, persist=True, conf=0.30,
-                                       imgsz=640, device=device, verbose=False)
-        cur_boxes, cur_ids, cur_confs = [], [], []
-        if results[0].boxes is not None and results[0].boxes.id is not None:
+                                       imgsz=640, device=device, verbose=False) # 얼굴 검출 + 트래킹 ㅇㅇ 
+        cur_boxes, cur_ids, cur_confs = [], [], [] # 얼굴 박스들 좌표, 각 박스에 대응하는 트래킹 ID, 각 박스의 검출 conf
+        if results[0].boxes is not None and results[0].boxes.id is not None: # 박스들이 있음 + id들도 있음 
             cur_boxes = results[0].boxes.xyxy.cpu().numpy().tolist()
             cur_ids   = results[0].boxes.id.int().cpu().tolist()
             cur_confs = results[0].boxes.conf.cpu().tolist()
