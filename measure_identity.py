@@ -37,6 +37,7 @@ data/
 """
 
 import os
+import sys
 import cv2
 import json
 import glob
@@ -47,8 +48,11 @@ import torchvision.transforms as transforms
 from PIL import Image
 from ultralytics import YOLO
 
+from heatmap_engine import HeatmapEngine
+
 # 설정 
-VIDEOS = [f"video_{i:02d}" for i in range(1, 6)]
+# 등록자 사진/라벨이 없는 영상은 evaluate_video 에서 자동 스킵된다
+VIDEOS = [f"video_{i:02d}" for i in range(1, 11)]
 
 FACE_MODEL_PATH  = "models/yolov12s-face.pt"
 ADAFACE_PATH     = "adaface_ir50_ms1mv2.ckpt"
@@ -83,7 +87,7 @@ except Exception as e:
 try:
     import core.net as net
     adaface_model = net.build_model('ir_50')
-    ckpt = torch.load(ADAFACE_PATH, map_location=device)
+    ckpt = torch.load(ADAFACE_PATH, map_location=device, weights_only=False)  # torch>=2.6 기본값 대응 (공식 AdaFace ckpt)
     state_dict = ckpt.get('state_dict', ckpt)
     state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
     adaface_model.load_state_dict(state_dict, strict=False)
@@ -98,114 +102,6 @@ adaface_transform = transforms.Compose([
 ])
 
 
-# HeatmapEngine
-class HeatmapEngine:
-    """
-    YOLO 트래커가 ID를 잃거나 튀는 현상을 보완하기 위한 히트맵 기반 안정화 엔진.
-    얼굴이 잠깐 가려지거나 신뢰도가 낮아져도 이전 위치/크기를 스무딩하여 유지한다.
-    """
-
-    def __init__(self, frame_width, frame_height, grid_scale=0.1):
-        self.grid_w = int(frame_width * grid_scale)
-        self.grid_h = int(frame_height * grid_scale)
-        self.scale  = grid_scale
-        self.channels     = {}   # {track_id: heatmap(grid_h, grid_w)}
-        self.last_sizes   = {}   # {track_id: (w, h)}
-        self.last_centers = {}   # {track_id: (cx, cy)}
-        self.base_decay   = 0.96
-
-    def reset_memory(self):
-        self.channels.clear()
-        self.last_sizes.clear()
-        self.last_centers.clear()
-
-    def update_and_recover(self, boxes, ids, confs):
-        # 1) 모든 채널 decay
-        for f_id in list(self.channels.keys()):
-            self.channels[f_id] *= self.base_decay
-
-        final_boxes = []
-        final_ids   = []
-        seen_ids    = set()
-
-        for box, f_id, conf in zip(boxes, ids, confs):
-            x1, y1, x2, y2 = map(int, box)
-            w, h = x2 - x1, y2 - y1
-            cx, cy = x1 + w // 2, y1 + h // 2
-            hcx = int(cx * self.scale)
-            hcy = int(cy * self.scale)
-
-            # 2) 신규 ID → 히트맵에서 같은 위치 old_id 매핑 시도
-            matched_id = f_id
-            if f_id not in self.channels:
-                best_id   = None
-                best_heat = 0.2
-                for old_id, heatmap in self.channels.items():
-                    if 0 <= hcy < self.grid_h and 0 <= hcx < self.grid_w:
-                        if heatmap[hcy, hcx] > best_heat:
-                            best_heat = heatmap[hcy, hcx]
-                            best_id   = old_id
-                if best_id is not None:
-                    matched_id = best_id
-
-            if matched_id in seen_ids:
-                continue
-            seen_ids.add(matched_id)
-
-            # 3) 부분 가려짐 판단 (conf 낮거나 크기가 갑자기 줄어든 경우)
-            is_full_face = True
-            if conf < 0.45:
-                is_full_face = False
-            elif matched_id in self.last_sizes:
-                prev_w, prev_h = self.last_sizes[matched_id]
-                if w < prev_w * 0.8 or h < prev_h * 0.8:
-                    is_full_face = False
-
-            # 4) 위치/크기 스무딩
-            if matched_id in self.last_sizes:
-                if is_full_face:
-                    prev_w, prev_h = self.last_sizes[matched_id]
-                    pcx, pcy = self.last_centers[matched_id]
-                    self.last_sizes[matched_id]   = (int(prev_w * 0.7 + w * 0.3),
-                                                      int(prev_h * 0.7 + h * 0.3))
-                    self.last_centers[matched_id] = (int(pcx * 0.7 + cx * 0.3),
-                                                      int(pcy * 0.7 + cy * 0.3))
-                # is_full_face=False이면 last_sizes/centers를 그대로 유지 (이전 값 사용)
-            else:
-                self.last_sizes[matched_id]   = (w, h)
-                self.last_centers[matched_id] = (cx, cy)
-
-            curr_cx, curr_cy = self.last_centers[matched_id]
-            curr_w,  curr_h  = self.last_sizes[matched_id]
-
-            # 5) 히트맵 채널 업데이트
-            if matched_id not in self.channels:
-                self.channels[matched_id] = np.zeros(
-                    (self.grid_h, self.grid_w), dtype=np.float32)
-
-            gx1 = max(0, int((curr_cx - curr_w / 2) * self.scale))
-            gy1 = max(0, int((curr_cy - curr_h / 2) * self.scale))
-            gx2 = min(self.grid_w, int((curr_cx + curr_w / 2) * self.scale))
-            gy2 = min(self.grid_h, int((curr_cy + curr_h / 2) * self.scale))
-            self.channels[matched_id][gy1:gy2, gx1:gx2] += 2.0
-            self.channels[matched_id] = np.clip(self.channels[matched_id], 0, 10.0)
-
-            final_boxes.append([
-                curr_cx - curr_w // 2, curr_cy - curr_h // 2,
-                curr_cx + curr_w // 2, curr_cy + curr_h // 2
-            ])
-            final_ids.append(matched_id)
-
-        # 6) 오래된 채널 삭제 (max <= 0.5이면 제거)
-        for f_id in list(self.channels.keys()):
-            if f_id not in seen_ids and np.max(self.channels[f_id]) <= 0.5:
-                del self.channels[f_id]
-                self.last_centers.pop(f_id, None)
-                self.last_sizes.pop(f_id, None)
-
-        return final_boxes, final_ids
-
-
 # 유틸 함수 
 def centers_close(cx1, cy1, cx2, cy2, ref_w, ref_h, ratio=0.8):
     """두 중심점이 얼굴 크기 기준 ratio 이내인지 확인."""
@@ -214,11 +110,13 @@ def centers_close(cx1, cy1, cx2, cy2, ref_w, ref_h, ratio=0.8):
 
 def reset_tracker():
     """
-    YOLO 내부 tracker 상태를 완전히 초기화한다.
+    YOLO 내부 tracker 상태를 초기화한다.
     역방향 패스 시작 전 호출하여 정방향 tracker 상태를 제거한다.
+    predictor=None 으로 밀면 이후 탐지 박스가 크게 줄어들어 tracker.reset() 만 사용한다.
     """
     try:
-        face_detector.predictor = None
+        for tr in face_detector.predictor.trackers:
+            tr.reset()
     except Exception:
         pass
 
@@ -277,9 +175,10 @@ def load_labelme_boxes(label_dir: str) -> dict:
         boxes = []
         for s in lm.get("shapes", []):
             if s.get("shape_type") == "rectangle" and len(s["points"]) >= 2:
+                # 꼭짓점 순서 정규화 (LabelMe 드래그 방향에 따라 뒤집힘 -> 정규화 안 하면 IoU 가 0 이 됨)
                 boxes.append([
-                    s["points"][0][0], s["points"][0][1],
-                    s["points"][1][0], s["points"][1][1],
+                    min(s["points"][0][0], s["points"][1][0]), min(s["points"][0][1], s["points"][1][1]),
+                    max(s["points"][0][0], s["points"][1][0]), max(s["points"][0][1], s["points"][1][1]),
                 ])
         result[key] = boxes
     return result
@@ -396,11 +295,13 @@ def run_identity_pass(
             if idx % 100 == 0:
                 print(f"  [{pass_name}] 프레임 {idx} track() 오류 스킵: {e}")
 
-        all_boxes, all_ids = heatmap_engine.update_and_recover(
+        raw_boxes, raw_ids, rec_boxes, rec_ids = heatmap_engine.detect_with_recovery_ids(
             current_boxes, current_ids, current_confs)
+        all_boxes = raw_boxes + rec_boxes
+        all_ids   = raw_ids + rec_ids
 
-        # 신원 판단 
-        for box, f_id in zip(all_boxes, all_ids):
+        # 신원 판단 (실제 탐지된 박스에서만 임베딩 추출)
+        for box, f_id in zip(raw_boxes, raw_ids):
             if global_identities.get(f_id) is True:
                 continue
 
@@ -577,7 +478,7 @@ def get_mosaic_boxes(frame_idx, fwd_tracking, rev_tracking, merged_ids, rev_iden
 
 
 # 영상 1개 측정 
-def evaluate_video(video_name: str) -> dict | None:
+def evaluate_video(video_name: str):  # -> dict | None (venv Python < 3.10 에서는 | 타입 문법 불가)
     video_path      = f"videos/{video_name}.mp4"
     face_dir        = f"data/{video_name}/registered_face"
     reg_label_dir   = f"data/{video_name}/registered_sample"   # 등록자 GT
@@ -645,9 +546,9 @@ def evaluate_video(video_name: str) -> dict | None:
         frame_height=fh,
         known_embeddings=known_embs,
         pass_name="역방향",
-        embedding_interval=3,
+        embedding_interval=5,   # 서버(tasks_add_backTracking_V2)와 동일
     )
-    rev_tracking = list(reversed(rev_tracking_rev))
+    rev_tracking =list(reversed(rev_tracking_rev))
 
     # 신원 정보 병합 
     print("\n" + "─" * 50)
@@ -730,8 +631,56 @@ def evaluate_video(video_name: str) -> dict | None:
             if not box_detected(gt, mosaic_boxes):
                 far_wrong += 1
 
+    # FAR (등록자 라벨이 있는 프레임만): 위 FAR 는 '시스템이 등록자로 판정한 박스와 겹치는 GT'를 분모에서
+    # 빼므로 오등록(False Accept) 자체가 집계에서 빠진다. 등록자 GT 가 있는 프레임에서는 예측과 무관하게
+    # 등록자 GT 와 겹치지 않는 얼굴이 곧 미등록자이므로, 이 프레임들로만 계산하면 편향이 없다.
+    far_s_total = 0
+    far_s_wrong = 0
+    far_s_id_err = 0     # GT와 겹친 박스가 등록자로 판정되어 모자이크 안 됨 (신원 오판)
+    far_s_box_miss = 0   # 그 외: 박스 없음, 위치 어긋남(IoU<0.3), 중복 제거로 박스 소실
+    for key, rboxes in reg_gt.items():
+        if not rboxes or key not in unreg_gt:
+            continue
+        f_idx = int(key.replace("frame_", ""))
+        if f_idx >= total:
+            continue
+        mosaic_boxes = get_mosaic_boxes(
+            f_idx, fwd_tracking, rev_tracking, merged_ids, rev_identities)
+        for gt in unreg_gt[key]:
+            if any(iou(gt, rb) >= 0.3 for rb in rboxes):
+                continue   # 등록자 본인 얼굴
+            far_s_total += 1
+            if not box_detected(gt, mosaic_boxes):
+                far_s_wrong += 1
+                # 원인 구분: GT와 겹친 박스(IoU>=0.3)가 등록자로 판정된 경우만 신원 오판,
+                # 나머지는 박스 누락/정렬/중복 제거 문제로 분류
+                fb, fi = fwd_tracking[f_idx]
+                rb, ri = rev_tracking[f_idx]
+                judged_reg = (
+                    any(iou(gt, b) >= 0.3 and merged_ids.get(i) is True for b, i in zip(fb, fi))
+                    or any(iou(gt, b) >= 0.3 and rev_identities.get(i) is True for b, i in zip(rb, ri)))
+                if judged_reg:
+                    far_s_id_err += 1
+                else:
+                    far_s_box_miss += 1
+
+    # FRR 실패 프레임 (원인 분석용)
+    frr_fail_frames = []
+    for key, rboxes in sorted(reg_gt.items()):
+        f_idx = int(key.replace("frame_", ""))
+        if not rboxes or f_idx >= total:
+            continue
+        mosaic_boxes = get_mosaic_boxes(
+            f_idx, fwd_tracking, rev_tracking, merged_ids, rev_identities)
+        if any(box_detected(g, mosaic_boxes) for g in rboxes):
+            frr_fail_frames.append(f_idx)
+    reg_frames_all = sorted(int(k.replace("frame_", "")) for k, b in reg_gt.items() if b)
+    print(f"  [FRR 분석] 등록자 GT 프레임 {reg_frames_all}")
+    print(f"  [FRR 분석] 모자이크된(실패) 프레임 {frr_fail_frames}")
+
     frr = frr_wrong / frr_total if frr_total > 0 else None
     far = far_wrong / far_total if far_total > 0 else None
+    far_s = far_s_wrong / far_s_total if far_s_total > 0 else None
 
     print(f"\n  결과:")
     if frr is not None:
@@ -743,6 +692,10 @@ def evaluate_video(video_name: str) -> dict | None:
     else:
         print("  미등록자 라벨 없음")
 
+    if far_s is not None:
+        print(f"  미등록자 GT(등록자 라벨 프레임) {far_s_total}개  →  FAR_s: {far_s * 100:.1f}%  "
+              f"(신원 오판 {far_s_id_err}, 박스 누락/정렬 {far_s_box_miss})")
+
     return {
         "video"    : video_name,
         "reg_gt"   : frr_total,
@@ -751,6 +704,11 @@ def evaluate_video(video_name: str) -> dict | None:
         "far_wrong": far_wrong,
         "FRR(%)"   : round(frr * 100, 2) if frr is not None else "-",
         "FAR(%)"   : round(far * 100, 2) if far is not None else "-",
+        "unreg_gt_s": far_s_total,
+        "far_wrong_s": far_s_wrong,
+        "FAR_s(%)" : round(far_s * 100, 2) if far_s is not None else "-",
+        "far_s_id_err": far_s_id_err,
+        "far_s_box_miss": far_s_box_miss,
     }
 
 
@@ -780,6 +738,25 @@ def print_report(results: list):
     avg_far = f"{sum(far_vals) / len(far_vals):.2f}%" if far_vals else "-"
     print(f"  {'평균':<12} {'':>8} {avg_frr:>8} {'':>9} {avg_far:>8}")
     print(sep)
+
+    def wilson(k, n, z=1.96):
+        if n == 0:
+            return (0.0, 0.0)
+        p = k / n
+        d = 1 + z * z / n
+        c = (p + z * z / (2 * n)) / d
+        h = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+        return (max(0.0, c - h), min(1.0, c + h))
+
+    fk = sum(r["frr_wrong"] for r in results); fn = sum(r["reg_gt"] for r in results)
+    ak = sum(r["far_wrong"] for r in results); an = sum(r["unreg_gt"] for r in results)
+    sk = sum(r["far_wrong_s"] for r in results); sn = sum(r["unreg_gt_s"] for r in results)
+    print("  [합산(pooled), Wilson 95% CI]")
+    for name, k, n in [("FRR", fk, fn), ("FAR(예측 기반 제외, 편향됨)", ak, an),
+                       ("FAR_s(등록자 라벨 프레임만)", sk, sn)]:
+        lo, hi = wilson(k, n)
+        print(f"  {name:<28} {k}/{n} = {100 * k / max(n, 1):.2f}%  CI [{lo * 100:.2f}, {hi * 100:.2f}]")
+    print(sep)
     print(f"\n  FRR: 등록자가 모자이크된 비율 (낮을수록 좋음)")
     print(f"  FAR: 미등록자가 통과된 비율   (낮을수록 좋음)")
     print(sep)
@@ -793,6 +770,10 @@ def print_report(results: list):
 
 
 if __name__ == "__main__":
+    # 인자로 영상 번호를 주면 해당 영상만 평가하고 별도 CSV에 저장 (예: 7 8 10)
+    if len(sys.argv) > 1:
+        VIDEOS = [f"video_{int(a):02d}" for a in sys.argv[1:]]
+        OUTPUT_CSV = "results/identity_eval_" + "_".join(v[-2:] for v in VIDEOS) + ".csv"
     all_results = []
     for vname in VIDEOS:
         r = evaluate_video(vname)

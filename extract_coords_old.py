@@ -4,13 +4,18 @@ import torch
 import numpy as np
 from ultralytics import YOLO
 import os
+import sys
+
+# 사용법: python extract_coords_old.py [모델이름, 기본 yolov12s-face]
+MODEL_NAME = sys.argv[1] if len(sys.argv) > 1 else "yolov12s-face"
+OUT_DIR    = f"results_reset/{MODEL_NAME}"
 
 VIDEOS = ["video_01", "video_02", "video_03", "video_04", "video_05", "video_06", "video_07", "video_08", "video_09", "video_10"]
 
 for video_name in VIDEOS:
     VIDEO_PATH  = f"videos/{video_name}.mp4"
-    OUTPUT_JSON = f"results/{video_name}_coords_old.json"
-    MODEL_PATH = "models/yolov12s-face.pt"
+    OUTPUT_JSON = f"{OUT_DIR}/{video_name}_coords_old.json"
+    MODEL_PATH = f"models/{MODEL_NAME}.pt"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     face_detector = YOLO(MODEL_PATH).to(device)
@@ -47,7 +52,7 @@ for video_name in VIDEOS:
     cap.release()
 
 
-    os.makedirs("results", exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
     with open(OUTPUT_JSON, "w") as f:
         json.dump(all_coords, f, indent=2)
 

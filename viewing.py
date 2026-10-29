@@ -3,17 +3,20 @@
 import json
 import os
 import cv2
-
+VIDEO_NAME = "video_03"
+NEW_JSON   = f"results_reset/yolov12s-face/{VIDEO_NAME}_coords_new.json"   # results/ → results_reset/...
+OUT_DIR    = f"results_reset/yolov12s-face/{VIDEO_NAME}_labelme_new"
+ONLY_ADDED = True    # 역방향/히트맵이 추가한 프레임만 저장
 # ────────────── 설정 ──────────────
-VIDEO_NAME       = "video_03"            # 보고 싶은 비디오
-NEW_JSON         = f"results/{VIDEO_NAME}_coords_new.json"
+#VIDEO_NAME       = "video_03"            # 보고 싶은 비디오
+#NEW_JSON         = f"results/{VIDEO_NAME}_coords_new.json"
 IMG_DIR          = f"data/{VIDEO_NAME}/frames"           # 프레임 이미지 폴더
 GT_DIR           = f"data/{VIDEO_NAME}/labels_labelme"   # GT
-OUT_DIR          = f"results/{VIDEO_NAME}_labelme_new"
+#OUT_DIR          = f"results/{VIDEO_NAME}_labelme_new"
 
 IMG_EXT          = ".jpg"     # 프레임 이미지 확장자 (.jpg or .png)
 INCLUDE_GT       = True       # GT 박스도 함께 표시할지
-ONLY_ADDED       = False      # True면 heatmap/reverse가 추가된 프레임만 저장 (빠른 디버깅용)
+#ONLY_ADDED       = False      # True면 heatmap/reverse가 추가된 프레임만 저장 (빠른 디버깅용)
 # ─────────────────────────────────
 
 

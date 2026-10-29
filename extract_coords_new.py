@@ -7,12 +7,17 @@ import json
 import torch
 import numpy as np
 import os
+import sys
 from ultralytics import YOLO
 
 VIDEOS = ["video_01", "video_02", "video_03", "video_04", "video_05",
           "video_06", "video_07", "video_08", "video_09", "video_10"]
 
-MODEL_PATH = "models/yolov12s-face.pt"
+# 사용법: python extract_coords_new.py [모델이름, 기본 yolov12s-face]
+#   결과는 results_reset/<모델이름>/ 에 저장된다 (기존 results/ 는 덮어쓰지 않음)
+MODEL_NAME = sys.argv[1] if len(sys.argv) > 1 else "yolov12s-face"
+MODEL_PATH = f"models/{MODEL_NAME}.pt"
+OUT_DIR    = f"results_reset/{MODEL_NAME}"
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 face_detector = YOLO(MODEL_PATH).to(device)
 
@@ -26,8 +31,11 @@ def iou(b1, b2): # IoU로 정방향 + 역방향..
     return inter / (a1 + a2 - inter + 1e-6)
 
 def reset_tracker():
+    # predictor=None 으로 밀면 다음 track() 에서 탐지 박스가 크게 줄어드는 문제가 있어(video_02 200프레임: 693 -> 462)
+    # predictor 는 유지하고 tracker 상태만 초기화한다.
     try:
-        face_detector.predictor = None
+        for tr in face_detector.predictor.trackers:
+            tr.reset()
     except Exception:
         pass
 
@@ -91,6 +99,8 @@ class HeatmapEngine:
                     matched_id = best_id
 
             if matched_id in seen_ids:
+                # 같은 ID 로 매칭된 중복 박스: 박스는 버리지 않고(비식별화 누락 방지) 메모리 갱신만 건너뜀
+                raw_boxes.append([x1, y1, x2, y2])
                 continue
             seen_ids.add(matched_id)
 
@@ -138,6 +148,7 @@ def run_pass(frames, frame_width, frame_height, label=""):
     프레임 시퀀스에 대해 YOLO + 히트맵 엔진을 돌림.
     Returns: 프레임별 (raw_boxes, recovered_boxes) 리스트
     """
+    reset_tracker()  # 패스/영상마다 트래커 상태 초기화 (이전 패스 상태가 이어지지 않도록)
     engine = HeatmapEngine(frame_width, frame_height)
     prev_frame = None
     scene_change_threshold = 30.0
@@ -172,7 +183,7 @@ def run_pass(frames, frame_width, frame_height, label=""):
 
 for video_name in VIDEOS:
     VIDEO_PATH  = f"videos/{video_name}.mp4"
-    OUTPUT_JSON = f"results/{video_name}_coords_new.json"
+    OUTPUT_JSON = f"{OUT_DIR}/{video_name}_coords_new.json"
 
     if os.path.exists(OUTPUT_JSON):
         print(f"[{video_name}] 이미 존재, 스킵")
@@ -210,8 +221,8 @@ for video_name in VIDEOS:
         fwd_raw, fwd_recovered = forward_results[idx]
         rev_raw, rev_recovered = reverse_results[idx]
 
-        # 역방향 후보 = 역방향의 raw + recovered (둘 다 활용)
-        reverse_candidates = rev_raw + rev_recovered
+        # 역방향 실제 탐지(raw)만 "reverse", 역방향 히트맵 복원은 아래에서 "reverse_heat"로 분리
+        reverse_candidates = rev_raw
 
         yolo_boxes    = [[float(v) for v in b] for b in fwd_raw]
         heatmap_added = []
@@ -243,6 +254,11 @@ for video_name in VIDEOS:
             "heatmap": heatmap_added,
             "reverse": reverse_added,
             "reverse_heat": reverse_heat_added,
+            # ablation 용: 중복 제거 전 소스별 원본 박스 (analyze_ablation.py 에서 사용)
+            "fwd_raw":      [[float(v) for v in b] for b in fwd_raw],
+            "fwd_rec_all":  [[float(v) for v in b] for b in fwd_recovered],
+            "rev_raw_all":  [[float(v) for v in b] for b in rev_raw],
+            "rev_rec_all":  [[float(v) for v in b] for b in rev_recovered],
         }
 
         sum_yolo += len(yolo_boxes)
@@ -253,7 +269,7 @@ for video_name in VIDEOS:
             print(f"    frame_{idx:04d}: yolo={len(yolo_boxes)} "
                   f"+heatmap={len(heatmap_added)} +reverse={len(reverse_added)}")
 
-    os.makedirs("results", exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
     with open(OUTPUT_JSON, "w") as f:
         json.dump(all_coords, f, indent=2)
 

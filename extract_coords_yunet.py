@@ -6,8 +6,11 @@ import urllib.request
 import torch
 from ultralytics.trackers.byte_tracker import BYTETracker
 from ultralytics.engine.results import Boxes
+
+from heatmap_engine import HeatmapEngine  # 서버/YOLO 평가와 공용 (중복 ID 박스 보존, 복원 박스 ID 반환)
 from types import SimpleNamespace
 
+OUT_DIR = "results_reset/yolov12s-face"   # Table 2: YOLOv12s Baseline/Proposed 와 같은 폴더에 저장
 VIDEOS = ["video_01", "video_02", "video_03", "video_04", "video_05",
           "video_06", "video_07", "video_08", "video_09", "video_10"]
 
@@ -114,7 +117,7 @@ def bytetrack_update(tracker, boxes_xyxy, confs, frame):
     return tracked_boxes, tracked_ids, tracked_confs
 
 
-# ─── HeatmapEngine (extract_coords_new.py와 동일) ────────────
+# ─── 박스 중복 판정 ──────────────────────────────────────────
 def iou(b1, b2):
     x1 = max(b1[0], b2[0]); y1 = max(b1[1], b2[1])
     x2 = min(b1[2], b2[2]); y2 = min(b1[3], b2[3])
@@ -125,87 +128,6 @@ def iou(b1, b2):
 
 def overlaps_any(box, existing, thresh=0.3):
     return any(iou(box, e) >= thresh for e in existing)
-
-
-class HeatmapEngine:
-    def __init__(self, frame_width, frame_height, grid_scale=0.1):
-        self.grid_w = int(frame_width * grid_scale)
-        self.grid_h = int(frame_height * grid_scale)
-        self.scale  = grid_scale
-        self.channels     = {}
-        self.last_sizes   = {}
-        self.last_centers = {}
-        self.base_decay        = 0.96
-        self.recovery_heat_min = 1.5
-        self.conf_full_face    = 0.45
-
-    def reset_memory(self):
-        self.channels.clear()
-        self.last_sizes.clear()
-        self.last_centers.clear()
-
-    def detect_with_recovery(self, det_boxes, det_ids, det_confs):
-        for f_id in list(self.channels.keys()):
-            self.channels[f_id] *= self.base_decay
-
-        raw_boxes = []
-        seen_ids  = set()
-
-        for box, f_id, conf in zip(det_boxes, det_ids, det_confs):
-            x1, y1, x2, y2 = map(int, box)
-            w, h = x2 - x1, y2 - y1
-            cx, cy = x1 + w // 2, y1 + h // 2
-
-            matched_id = f_id
-            if f_id not in self.channels:
-                best_id, best_heat = None, 0.2
-                hcx = int(cx * self.scale)
-                hcy = int(cy * self.scale)
-                for old_id, hm in self.channels.items():
-                    if 0 <= hcy < self.grid_h and 0 <= hcx < self.grid_w:
-                        if hm[hcy, hcx] > best_heat:
-                            best_heat = hm[hcy, hcx]
-                            best_id   = old_id
-                if best_id is not None:
-                    matched_id = best_id
-
-            if matched_id in seen_ids:
-                continue
-            seen_ids.add(matched_id)
-            raw_boxes.append([x1, y1, x2, y2])
-
-            if conf >= self.conf_full_face:
-                self.last_sizes[matched_id]   = (w, h)
-                self.last_centers[matched_id] = (cx, cy)
-
-            if matched_id not in self.channels:
-                self.channels[matched_id] = np.zeros(
-                    (self.grid_h, self.grid_w), dtype=np.float32)
-            gx1 = max(0, int((cx - w/2) * self.scale))
-            gy1 = max(0, int((cy - h/2) * self.scale))
-            gx2 = min(self.grid_w, int((cx + w/2) * self.scale))
-            gy2 = min(self.grid_h, int((cy + h/2) * self.scale))
-            self.channels[matched_id][gy1:gy2, gx1:gx2] += 2.0
-            self.channels[matched_id] = np.clip(self.channels[matched_id], 0, 10.0)
-
-        recovered_boxes = []
-        for missing_id in list(set(self.channels.keys()) - seen_ids):
-            if missing_id not in self.last_sizes:
-                continue
-            if np.max(self.channels[missing_id]) < self.recovery_heat_min:
-                continue
-            cx, cy = self.last_centers[missing_id]
-            w, h   = self.last_sizes[missing_id]
-            recovered_boxes.append(
-                [cx - w//2, cy - h//2, cx + w//2, cy + h//2])
-
-        for f_id in list(set(self.channels.keys()) - seen_ids):
-            if np.max(self.channels[f_id]) <= 0.5:
-                del self.channels[f_id]
-                self.last_centers.pop(f_id, None)
-                self.last_sizes.pop(f_id, None)
-
-        return raw_boxes, recovered_boxes
 
 
 # ─── 단일 패스 실행 ───────────────────────────────────────────
@@ -223,7 +145,6 @@ def run_pass(frames, frame_width, frame_height, detector, fps=30, label=""):
             sp = cv2.resize(prev_frame, (64, 64))
             if np.mean(cv2.absdiff(sc, sp)) > scene_change_threshold:
                 engine.reset_memory()
-                tracker = reset_bytetracker(frame_rate=int(fps))
         prev_frame = frame.copy()
 
         # YuNet 검출
@@ -234,7 +155,7 @@ def run_pass(frames, frame_width, frame_height, detector, fps=30, label=""):
             tracker, mp_boxes, mp_confs, frame)
 
         # HeatmapEngine
-        raw, recovered = engine.detect_with_recovery(det_boxes, det_ids, det_confs)
+        raw, _, recovered, _ = engine.detect_with_recovery_ids(det_boxes, det_ids, det_confs)
         results_per_frame.append((raw, recovered))
 
         if idx % 100 == 0:
@@ -248,8 +169,8 @@ def run_pass(frames, frame_width, frame_height, detector, fps=30, label=""):
 # ═══════════════════════════════════════════════════════════════
 for video_name in VIDEOS:
     VIDEO_PATH = f"videos/{video_name}.mp4"
-    OUT_ONLY   = f"results/{video_name}_coords_yunet_only.json"
-    OUT_FULL   = f"results/{video_name}_coords_yunet_full.json"
+    OUT_ONLY   = f"{OUT_DIR}/{video_name}_coords_yunet_only.json"
+    OUT_FULL   = f"{OUT_DIR}/{video_name}_coords_yunet_full.json"
 
     if os.path.exists(OUT_ONLY) and os.path.exists(OUT_FULL):
         print(f"[{video_name}] 이미 존재, 스킵")
@@ -280,13 +201,6 @@ for video_name in VIDEOS:
         prev_frame   = None
 
         for idx, frame in enumerate(frames):
-            if prev_frame is not None:
-                sc = cv2.resize(frame, (64, 64))
-                sp = cv2.resize(prev_frame, (64, 64))
-                if np.mean(cv2.absdiff(sc, sp)) > 30.0:
-                    only_tracker = reset_bytetracker(frame_rate=int(fps))
-            prev_frame = frame.copy()
-
             mp_boxes, mp_confs = yunet_detect(detector, frame)
             det_boxes, _, _ = bytetrack_update(
                 only_tracker, mp_boxes, mp_confs, frame)
@@ -297,7 +211,7 @@ for video_name in VIDEOS:
             if idx % 100 == 0:
                 print(f"    [only] {idx}/{total} 처리 중...")
 
-        os.makedirs("results", exist_ok=True)
+        os.makedirs(OUT_DIR, exist_ok=True)
         with open(OUT_ONLY, "w") as f:
             json.dump(only_coords, f, indent=2)
         print(f"  ✅ [only] 저장 → {OUT_ONLY}")
@@ -320,7 +234,7 @@ for video_name in VIDEOS:
             fwd_raw, fwd_recovered = forward_results[idx]
             rev_raw, rev_recovered = reverse_results[idx]
 
-            reverse_candidates = rev_raw + rev_recovered
+            reverse_candidates = rev_raw
 
             det_boxes     = [[float(v) for v in b] for b in fwd_raw]
             heatmap_added = []

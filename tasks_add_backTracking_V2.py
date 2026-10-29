@@ -1,6 +1,5 @@
 import os
 import cv2
-import mediapipe as mp
 from ultralytics import YOLO
 import numpy as np
 import glob
@@ -11,6 +10,8 @@ import math
 import subprocess
 import shutil
 import tempfile
+
+from heatmap_engine import HeatmapEngine
 
 # ==========================================
 # 로컬 테스트용 설정
@@ -36,126 +37,6 @@ if not LOCAL_TEST_MODE:
  
  
 # ==========================================
-# HeatmapEngine
-# ==========================================
-class HeatmapEngine:
-    """
-    YOLO 트래커가 ID를 잃거나 튀는 현상을 보완하기 위한 히트맵 기반 안정화 엔진.
-    얼굴이 잠깐 가려지거나 신뢰도가 낮아져도 이전 위치/크기를 스무딩하여 유지한다.
-    """
- 
-    def __init__(self, frame_width, frame_height, grid_scale=0.1):
-        self.grid_w = int(frame_width * grid_scale) # 히트맵 가로 크기(원본의 10%)
-        self.grid_h = int(frame_height * grid_scale) # 히트맵 세로 크기
-        self.scale  = grid_scale # 0.1 = 10% 축소 비율
-        self.channels     = {}   # {track_id: heatmap(grid_h, grid_w)} : 얼굴별 위치 기록
-        self.last_sizes   = {}   # {track_id: (w, h)} : 마지막으로 본 얼굴 크기
-        self.last_centers = {}   # {track_id: (cx, cy)} : 마지막으로 본 얼굴 중심
-        self.base_decay   = 0.96 # 매 프레임마다 히트맵을 4% 감쇠.(오래된 위치 희석.) => 30프레임 기준 1초뒤 30%됨
- 
-    def reset_memory(self): # 씬 전환 감지 시 모든 기억 초기화!
-        self.channels.clear()
-        self.last_sizes.clear()
-        self.last_centers.clear()
- 
-    def get_visual_heatmap(self): # 시각화용!
-        combined = np.zeros((self.grid_h, self.grid_w), dtype=np.float32) # 빈 히트맵 생성
-        for heatmap in self.channels.values():
-            combined = np.maximum(combined, heatmap) # 모든 ID 히트맵을 최댓값으로 합성 -> 최대인부분만 볼수있도록
-        norm = np.clip(combined / 10.0 * 255, 0, 255).astype(np.uint8) # 0~255로 정규화
-        colored = cv2.applyColorMap(norm, cv2.COLORMAP_JET) # JET 컬러맵으로 시각화
-        gray = cv2.cvtColor(colored, cv2.COLOR_BGR2GRAY) 
-        _, mask = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY) # 낮은 값 영역 마스킹 
-        return cv2.bitwise_and(colored, colored, mask=mask) # 마스킹 적용해서 반환
- 
-    def update_and_recover(self, boxes, ids, confs):
-        # 1) 모든 채널 decay
-        for f_id in list(self.channels.keys()):
-            self.channels[f_id] *= self.base_decay # 매 프레임 0.96 곱하기 -> 시간 지날수록 희미..
- 
-        final_boxes = []
-        final_ids   = []
-        seen_ids    = set()
- 
-        for box, f_id, conf in zip(boxes, ids, confs):
-            x1, y1, x2, y2 = map(int, box)
-            w, h = x2 - x1, y2 - y1 # 박스 너비, 높이
-            cx, cy = x1 + w // 2, y1 + h // 2 # 중심점
-            hcx = int(cx * self.scale) # 히트맵 그리드 좌표로 변환
-            hcy = int(cy * self.scale)
- 
-            # 2) 신규 ID → 히트맵에서 같은 위치 old_id 매핑 시도
-            matched_id = f_id
-            if f_id not in self.channels: # 처음 보는 ID
-                best_id   = None # 아직 후보 없음
-                best_heat = 0.2 # 최솟값 임계치(히트맵이 최소 0.2는 넘어야 인정.)
-                for old_id, heatmap in self.channels.items():
-                    if 0 <= hcy < self.grid_h and 0 <= hcx < self.grid_w:
-                        if heatmap[hcy, hcx] > best_heat: # 현재 위치와 히트맵 값 비교!
-                            best_heat = heatmap[hcy, hcx] # 가장 높은값으로 갱신(가장 뜨겁)
-                            best_id   = old_id
-                if best_id is not None: # 찾았음
-                    matched_id = best_id # 같은 자리의 old_id로 교체 -> ID 연속성 유지.
- 
-            if matched_id in seen_ids: # 이미 이 프레임에서 처리한 ID이면 스킵!
-                continue
-            seen_ids.add(matched_id) # 첨보는 ID이면 처리!
- 
-            # 3) 부분 가려짐 판단
-            is_full_face = True
-            if conf < 0.45: # 신뢰도 낮으면 가려진것으로 판단!
-                is_full_face = False
-            elif matched_id in self.last_sizes:
-                prev_w, prev_h = self.last_sizes[matched_id]
-                if w < prev_w * 0.8 or h < prev_h * 0.8: # 이전보다 20%이상 작아지면 가려짐
-                    is_full_face = False
- 
-            # 4) 위치/크기 스무딩
-            if matched_id in self.last_sizes:
-                if is_full_face: # 안가려졌음
-                    prev_w, prev_h = self.last_sizes[matched_id]
-                    pcx, pcy = self.last_centers[matched_id]
-                    # 이전 70% 현재30% -> 지수이동평균으로 스무딩
-                    self.last_sizes[matched_id]   = (int(prev_w * 0.7 + w * 0.3),
-                                                      int(prev_h * 0.7 + h * 0.3))
-                    self.last_centers[matched_id] = (int(pcx * 0.7 + cx * 0.3),
-                                                      int(pcy * 0.7 + cy * 0.3))
-            else: # 처음 보는 ID이면 그냥 저장
-                self.last_sizes[matched_id]   = (w, h)
-                self.last_centers[matched_id] = (cx, cy)
- 
-            curr_cx, curr_cy = self.last_centers[matched_id]
-            curr_w,  curr_h  = self.last_sizes[matched_id]
- 
-            # 5) 히트맵 채널 업데이트
-            if matched_id not in self.channels:
-                self.channels[matched_id] = np.zeros((self.grid_h, self.grid_w), dtype=np.float32) # 새 히트맵 생성
-            # 스무딩된 박스 영역에 +2.0 누적, 최대 10.0 
-            gx1 = max(0, int((curr_cx - curr_w / 2) * self.scale))
-            gy1 = max(0, int((curr_cy - curr_h / 2) * self.scale))
-            gx2 = min(self.grid_w, int((curr_cx + curr_w / 2) * self.scale))
-            gy2 = min(self.grid_h, int((curr_cy + curr_h / 2) * self.scale))
-            self.channels[matched_id][gy1:gy2, gx1:gx2] += 2.0
-            self.channels[matched_id] = np.clip(self.channels[matched_id], 0, 10.0)
- 
-            final_boxes.append([
-                curr_cx - curr_w // 2, curr_cy - curr_h // 2,
-                curr_cx + curr_w // 2, curr_cy + curr_h // 2
-            ])
-            final_ids.append(matched_id)
- 
-        # 6) 오래된 채널 삭제
-        for f_id in list(self.channels.keys()):
-            if f_id not in seen_ids and np.max(self.channels[f_id]) <= 0.5:
-                # 이 프레임에 안보이고 히트맵도 거의 희미해졌으면 삭제!
-                del self.channels[f_id]
-                self.last_centers.pop(f_id, None)
-                self.last_sizes.pop(f_id, None)
- 
-        return final_boxes, final_ids
- 
- 
-# ==========================================
 # 모델 로드
 # ==========================================
 try:
@@ -176,13 +57,6 @@ try:
 except Exception:
     face_detector = YOLO('models/yolov12n-face.pt').to(device)
  
-mp_face_mesh  = mp.solutions.face_mesh
-face_mesh     = mp_face_mesh.FaceMesh(max_num_faces=15, refine_landmarks=False,
-                                       min_detection_confidence=0.3)
-static_face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1,
-                                          refine_landmarks=False,
-                                          min_detection_confidence=0.5)
- 
 try:
     face_aligner = FaceAnalysis(name='buffalo_sc', allowed_modules=['detection'],
                                 providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
@@ -197,7 +71,7 @@ adaface_transform = transforms.Compose([
  
 adaface_model = build_model('ir_50').to(device)
 try:
-    checkpoint   = torch.load('adaface_ir50_ms1mv2.ckpt', map_location=device)
+    checkpoint   = torch.load('adaface_ir50_ms1mv2.ckpt', map_location=device, weights_only=False)  # torch>=2.6 기본값 대응 (공식 AdaFace ckpt)
     state_dict   = checkpoint.get('state_dict', checkpoint)
     state_dict   = {k.replace('model.', ''): v for k, v in state_dict.items()}
     adaface_model.load_state_dict(state_dict, strict=False)
@@ -306,12 +180,13 @@ def apply_mosaic(frame, box):
  
 def reset_tracker():
     """
-    YOLO 내부 tracker 상태를 완전히 초기화한다.
-    predictor 자체를 None으로 밀어서 다음 track() 호출 시 새로 생성되게 한다.
-    이렇게 해야 역방향 패스 시작 시 이전 정방향 tracker 상태가 완전히 제거된다.
+    YOLO 내부 tracker 상태를 초기화한다.
+    역방향 패스 시작 시 이전 정방향 tracker 상태를 제거한다.
+    predictor=None 으로 밀면 이후 탐지 박스가 크게 줄어들어 tracker.reset() 만 사용한다.
     """
     try:
-        face_detector.predictor = None
+        for tr in face_detector.predictor.trackers:
+            tr.reset()
     except Exception:
         pass
  
@@ -398,12 +273,14 @@ def run_identity_pass(
             if idx % 100 == 0:
                 print(f"  [{pass_name}] 프레임 {idx} track() 오류 스킵: {e}")
 
-        # 히트맵으로 보강
-        all_boxes, all_ids = heatmap_engine.update_and_recover(
+        # 히트맵 메모리로 탐지 누락 복원 (복원 박스에도 ID 부여)
+        raw_boxes, raw_ids, rec_boxes, rec_ids = heatmap_engine.detect_with_recovery_ids(
             current_boxes, current_ids, current_confs)
+        all_boxes = raw_boxes + rec_boxes
+        all_ids   = raw_ids + rec_ids
             
-        # ── 신원 판단 ────────────────────────────────────────
-        for box, f_id in zip(all_boxes, all_ids):
+        # ── 신원 판단 (실제 탐지된 박스에서만 임베딩 추출) ──────────
+        for box, f_id in zip(raw_boxes, raw_ids):
             if global_identities.get(f_id) is True:
                 continue
  
@@ -689,17 +566,32 @@ def process_video(input_path, output_path, user_faces_dir,
     # ── 8) ffmpeg 재인코딩 ─────────────────────────────────
     print("\n🔧 ffmpeg 재인코딩 중...")
     temp_path = output_path.replace('.mp4', '_temp.mp4')
-    os.rename(output_path, temp_path)
- 
-    result = subprocess.run([
-        'ffmpeg', '-y', '-i', temp_path, '-vcodec', 'libx264',
-        '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '23',
-        '-movflags', '+faststart', output_path
-    ], capture_output=True, text=True, encoding='utf-8', errors='ignore')
- 
-    os.remove(temp_path)
- 
-    if result.returncode != 0:
+    if shutil.which('ffmpeg') is None:
+        print("❌ ffmpeg를 찾을 수 없습니다. 설치 후 PATH를 확인하세요. (렌더링 결과는 재인코딩 없이 유지됩니다)")
+        return False
+
+    os.replace(output_path, temp_path)
+
+    try:
+        result = subprocess.run([
+            'ffmpeg', '-y', '-i', temp_path, '-vcodec', 'libx264',
+            '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '23',
+            '-movflags', '+faststart', output_path
+        ], capture_output=True, text=True, encoding='utf-8', errors='ignore')
+        ok = result.returncode == 0
+    except Exception:
+        ok = False
+        raise
+    finally:
+        if ok:
+            os.remove(temp_path)
+        else:
+            # 실패 시 원본 렌더링 결과를 원래 이름으로 복구
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            os.replace(temp_path, output_path)
+
+    if not ok:
         print(f"❌ ffmpeg 실패:\n{result.stderr}")
         return False
  

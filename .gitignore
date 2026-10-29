@@ -83,6 +83,8 @@ videos/
 results/
 uploads/
 heatmap_overlay_frame*.jpg
+results_reset/
+results_sweep/
 # Translations
 *.mo
 *.pot

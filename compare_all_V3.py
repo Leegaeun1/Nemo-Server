@@ -1,10 +1,14 @@
 import json
 import os
+import sys
 import csv
 import numpy as np
 
 VIDEOS = ["video_01", "video_02", "video_03", "video_04", "video_05",
           "video_06", "video_07", "video_08", "video_09", "video_10"]
+
+# 사용법: python compare_all_V3.py [결과폴더, 기본 results]
+RESULTS_DIR = sys.argv[1] if len(sys.argv) > 1 else "results"
 
 IOU_THRESH = 0.3
 WELL_COVERED_THR = 0.95
@@ -229,6 +233,7 @@ def print_summary(rows, variant_keys, labels):
 # 메인 루프
 # ═══════════════════════════════════════════════════════════════
 overall = []
+pooled_store = []   # (rows, hard_rows, variant_keys) per video
 
 for video_name in VIDEOS:
     GT_DIR = f"data/{video_name}/labels_labelme"
@@ -239,7 +244,7 @@ for video_name in VIDEOS:
     # 이 영상에서 실제로 존재하는 파일만 로드 (없는 디텍터는 자동으로 스킵됨)
     loaded = {}
     for v in VARIANTS:
-        path = f"results/{video_name}_{v['file']}"
+        path = f"{RESULTS_DIR}/{video_name}_{v['file']}"
         if os.path.exists(path):
             with open(path) as f:
                 loaded[v["key"]] = json.load(f)
@@ -259,11 +264,20 @@ for video_name in VIDEOS:
         with open(os.path.join(GT_DIR, jf)) as f:
             lm = json.load(f)
         key = jf.replace(".json", "")
+        # LabelMe 는 드래그 방향에 따라 꼭짓점 순서가 뒤집힐 수 있어 (x1<x2, y1<y2) 로 정규화한다.
+        # 정규화하지 않으면 IoU/커버리지가 항상 0 이 되어 해당 GT 가 모든 변형에서 '놓친 것'으로 집계된다.
         gt_coords[key] = [
-            [s["points"][0][0], s["points"][0][1],
-             s["points"][1][0], s["points"][1][1]]
+            [min(s["points"][0][0], s["points"][1][0]), min(s["points"][0][1], s["points"][1][1]),
+             max(s["points"][0][0], s["points"][1][0]), max(s["points"][0][1], s["points"][1][1])]
             for s in lm["shapes"]
         ]
+
+    # 결과 파일에 GT 프레임이 빠져 있으면 조용히 miss 로 계산되므로 경고
+    for vk in variant_keys:
+        missing = [k for k in gt_coords if k not in loaded[vk]]
+        if missing:
+            print(f"  ⚠ [{video_name}] {label_of[vk]}: GT {len(gt_coords)}프레임 중 "
+                  f"{len(missing)}프레임이 결과에 없음 (예: {missing[:3]}) — 실험이 끊겼는지 확인")
 
     rows = []
     # 소스별 GT 매칭 총계 (dict 변형에 대해서만)
@@ -306,8 +320,8 @@ for video_name in VIDEOS:
     if not rows:
         continue
 
-    OUTPUT_CSV = f"results/comparison_{video_name}.csv"
-    os.makedirs("results", exist_ok=True)
+    OUTPUT_CSV = f"{RESULTS_DIR}/comparison_{video_name}.csv"
+    os.makedirs(RESULTS_DIR, exist_ok=True)
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=rows[0].keys())
         w.writeheader()
@@ -318,7 +332,8 @@ for video_name in VIDEOS:
     print_summary(rows, variant_keys, label_of)
 
     if BASELINE_KEY in variant_keys:
-        hard_rows = [r for r in rows if r[f"{BASELINE_KEY}_miss"] > 0]
+        # hard = Baseline 이 1:1 greedy 매칭(Recall 과 동일 기준)으로 GT 를 하나라도 놓친 프레임
+        hard_rows = [r for r in rows if r["gt_count"] > 0 and r[f"{BASELINE_KEY}_rec"] < 1]
         print(f"\n[HARD FRAMES — {label_of[BASELINE_KEY]}가 놓친 GT 있는 프레임만, "
               f"n={len(hard_rows)}/{len(rows)}]")
         print_summary(hard_rows, variant_keys, label_of)
@@ -343,6 +358,8 @@ for video_name in VIDEOS:
     def wellpct(rs, k):
         gt_t = sum(r["gt_count"] for r in rs)
         return 100 * sum(r[k] for r in rs) / gt_t if gt_t else 0.0
+
+    pooled_store.append((rows, hard_rows, variant_keys))
 
     summary_row = {"video": video_name, "n_all": len(rows), "n_hard": len(hard_rows)}
     for vk in variant_keys:
@@ -395,5 +412,52 @@ if overall:
                   f"{s.get(f'hard_{vk}_rec', 0):>8.3f}"
                   f"{s.get(f'hard_{vk}_cov_bbox', 0):>8.3f}"
                   f"{s.get(f'hard_{vk}_cov_circle', 0):>8.3f}")
+
+# ═══════════════════════════════════════════════════════════════
+# 전체 영상 합산(pooled) — 영상별 평균의 평균이 아니라 프레임/GT 단위로 합산
+#   Recall(frame) : 프레임별 Recall 의 평균
+#   Recall(GT)    : 매칭된 GT 총수 / GT 총수 (micro)
+#   CovC          : 프레임별 원형 커버리지의 평균
+#   WellC%        : 원형 커버리지 >= 95% 인 GT 비율
+# ═══════════════════════════════════════════════════════════════
+if pooled_store:
+    pooled_csv_rows = []
+    for scope in ("all", "hard"):
+        stats = {}
+        for rows, hard_rows, vks in pooled_store:
+            use = rows if scope == "all" else hard_rows
+            for vk in vks:
+                s = stats.setdefault(vk, {"n": 0, "gt": 0, "tp": 0, "rec": 0.0,
+                                          "cov": 0.0, "well": 0})
+                for r in use:
+                    s["n"] += 1
+                    s["gt"] += r["gt_count"]
+                    s["tp"] += round(r[f"{vk}_rec"] * r["gt_count"])
+                    s["rec"] += r[f"{vk}_rec"]
+                    s["cov"] += r[f"{vk}_cov_circle"]
+                    s["well"] += r[f"{vk}_well_circle"]
+
+        title = "ALL FRAMES" if scope == "all" else f"HARD FRAMES (기준: {BASELINE_KEY.upper()}가 놓친 프레임)"
+        print(f"\n\n{'='*100}\n POOLED {title} — 전체 영상 합산\n{'='*100}")
+        print(f"    {'변형':<12}{'frames':>8}{'GT':>7}{'Rec(fr)':>9}{'Rec(GT)':>9}{'CovC':>8}{'WellC%':>9}")
+        for v in VARIANTS:
+            s = stats.get(v["key"])
+            if not s or s["n"] == 0:
+                continue
+            rec_fr, rec_gt = s["rec"] / s["n"], s["tp"] / s["gt"]
+            cov, well = s["cov"] / s["n"], 100 * s["well"] / s["gt"]
+            print(f"    {v['label']:<12}{s['n']:>8}{s['gt']:>7}{rec_fr:>9.3f}{rec_gt:>9.3f}"
+                  f"{cov:>8.3f}{well:>8.1f}%")
+            pooled_csv_rows.append({"scope": scope, "variant": v["label"], "frames": s["n"],
+                                    "gt": s["gt"], "recall_frame": round(rec_fr, 4),
+                                    "recall_gt": round(rec_gt, 4), "covc": round(cov, 4),
+                                    "wellc_pct": round(well, 2)})
+    if pooled_csv_rows:
+        pooled_path = f"{RESULTS_DIR}/pooled_summary.csv"
+        with open(pooled_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=pooled_csv_rows[0].keys())
+            w.writeheader()
+            w.writerows(pooled_csv_rows)
+        print(f"\n📊 저장: {pooled_path}")
 
 print("\n 비교 완료!")
