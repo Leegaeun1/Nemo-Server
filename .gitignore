@@ -85,6 +85,9 @@ uploads/
 heatmap_overlay_frame*.jpg
 results_reset/
 results_sweep/
+!framework_V2.png
+!screen.png
+
 # Translations
 *.mo
 *.pot
