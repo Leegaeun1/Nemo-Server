@@ -79,7 +79,6 @@ serviceAccountKey.json
 celery
 outputs/
 data/
-videos/
 results/
 uploads/
 heatmap_overlay_frame*.jpg
