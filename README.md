@@ -55,8 +55,9 @@ Nemo-Server/
 ├── video_stats.py                   # Per-video statistics table
 │
 ├── verify_heatmap_engine.py         # Compares the shared engine with saved results
-└── find_good_frames.py, check_frame.py, crop_figure.py, make_figure_panels.py
+├── find_good_frames.py, check_frame.py, crop_figure.py, make_figure_panels.py
                                      # Qualitative figure helpers
+└── vidoe_links.md                   # video link
 
 ```
 
